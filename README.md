@@ -120,6 +120,46 @@ Set `CCB_ENABLE_ROTATION=1` to expose these. Disabled by default.
 
 ---
 
+## Recommended patterns
+
+A few workflow patterns that pair well with window mode. These are conventions on top of the tools, not features of the bridge itself.
+
+### Auto-poll progress with `/loop`
+
+After dispatching a long job, have Claude check on it for you instead of asking by hand:
+
+```
+/loop 10m peek codex job j-xxxxxxxxxx and tell me what changed since last time
+```
+
+Claude wakes itself every 10 minutes, calls `peek_codex`, and reports new tool calls / file changes / completion. Stop the loop when codex finishes.
+
+### Block-until-done with `wait_for_codex`
+
+For tasks where Claude has follow-up work after codex finishes (review, commit, dispatch next phase), dispatch and wait in the same turn:
+
+> Spawn codex with this HANDOFF, then `wait_for_codex` with timeout 5400s. When it returns, read the final message and tell me whether the acceptance criteria are met.
+
+Claude blocks inside the tool call until the `last_message_file` appears. You can leave the chat; Claude picks up the review step automatically.
+
+### Have codex self-verify
+
+Phrase the prompt so codex produces a machine-parseable verdict before it stops:
+
+> Implement the change. Run `pytest tests/test_X.py` afterwards. The run is only acceptable if every test passes. End the final message with `STATUS: PASS` or `STATUS: FAIL: <reason>`.
+
+`peek_codex(...)["final_message"]` then carries a verdict instead of free-form prose, which Claude can branch on without re-reading the whole stream.
+
+### Chain phases via `session_id`
+
+For multi-step work, pass the previous `session_id` into the next `spawn_codex_window` so codex inherits the prior reasoning + tool history:
+
+> Spawn codex with prompt P1. After it returns session_id S, spawn another window with `session_id=S` and prompt P2.
+
+The second call resumes the same codex session under the same auth, with its memory of P1 intact.
+
+---
+
 ## Configuration
 
 All settings have built-in defaults. Override via env var or `~/.ai-bridge/config.json`. Env wins over file wins over default.

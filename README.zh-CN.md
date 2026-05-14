@@ -120,6 +120,46 @@ pip install claude-codex-bridge
 
 ---
 
+## 推荐用法
+
+几个跟 window 模式搭配得不错的工作流模式。这些是在工具之上的约定，不是 bridge 本身的功能。
+
+### 用 `/loop` 自动轮询进度
+
+派完长任务后，让 Claude 帮你定期看，不用自己问：
+
+```
+/loop 10m peek codex job j-xxxxxxxxxx and tell me what changed since last time
+```
+
+Claude 每 10 分钟自动唤醒一次，调 `peek_codex`，报告新增的 tool call / file change / 完成状态。codex 干完了就 stop loop。
+
+### 用 `wait_for_codex` 阻塞等
+
+如果 codex 跑完后 Claude 还有后续工作（review、commit、派下一个 phase），在同一轮里 dispatch + wait：
+
+> 用这个 HANDOFF spawn codex，然后 `wait_for_codex` timeout 5400s。等返回后读 final message 告诉我是否满足验收标准。
+
+Claude 在 wait 调用里阻塞着等 `last_message_file` 出现。你可以离开对话；Claude 自己接 review 步骤。
+
+### 让 codex 自验证
+
+Prompt 写法上让 codex 在退出前给一个机器可解析的判定：
+
+> 实现改动。之后跑 `pytest tests/test_X.py`。所有测试通过才算成功。最终消息末尾用 `STATUS: PASS` 或 `STATUS: FAIL: <reason>`。
+
+`peek_codex(...)["final_message"]` 就带一个明确判定，Claude 可以基于它分支，而不用再读整段 stream 自己推断。
+
+### 通过 `session_id` 串接多步任务
+
+多步任务里把上一步的 `session_id` 传给下一个 `spawn_codex_window`，codex 会继承之前的推理 + 工具调用历史：
+
+> 先用 prompt P1 spawn codex。拿到返回的 session_id S 后，用 `session_id=S` + prompt P2 spawn 另一个窗口。
+
+第二次调用在同一个 codex session、同一个 auth 下 resume，保留 P1 的上下文。
+
+---
+
 ## 配置
 
 所有设置都有内置默认值。可通过环境变量或 `~/.ai-bridge/config.json` 覆盖。优先级：env > config 文件 > 默认。
