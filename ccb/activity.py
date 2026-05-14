@@ -64,12 +64,23 @@ def parse_codex_activity(stream_path: Path) -> dict:
                             }
                         )
                     elif it == "file_change":
-                        activity["file_changes"].append(
-                            {
-                                "path": item.get("path") or item.get("file") or "",
-                                "action": item.get("action") or "",
-                            }
-                        )
+                        # Codex JSONL schema: item.changes = [{path, kind}, ...]
+                        changes = item.get("changes") or []
+                        if changes:
+                            for ch in changes:
+                                activity["file_changes"].append(
+                                    {
+                                        "path": ch.get("path") or ch.get("file") or "",
+                                        "action": ch.get("kind") or ch.get("action") or "",
+                                    }
+                                )
+                        else:
+                            activity["file_changes"].append(
+                                {
+                                    "path": item.get("path") or item.get("file") or "",
+                                    "action": item.get("kind") or item.get("action") or "",
+                                }
+                            )
                     else:
                         activity["tool_calls"].append(
                             {"kind": it or "?", "name": "", "summary": str(item)[:300]}

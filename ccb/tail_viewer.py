@@ -149,10 +149,19 @@ def main() -> int:
             print("  " + "  ".join(parts), flush=True)
 
     def emit_file_change(item: dict) -> None:
-        path = item.get("path") or item.get("file") or "?"
-        action = item.get("action") or ""
-        label = (action + " ") if action else ""
-        print(MAG + "*" + R + " " + label + B + path + R, flush=True)
+        # Codex JSONL schema: item.changes = [{path, kind}, ...]
+        changes = item.get("changes") or []
+        if not changes:
+            path = item.get("path") or item.get("file") or "?"
+            kind = item.get("kind") or item.get("action") or ""
+            label = (kind + " ") if kind else ""
+            print(MAG + "*" + R + " " + label + B + path + R, flush=True)
+            return
+        for ch in changes:
+            path = ch.get("path") or ch.get("file") or "?"
+            kind = ch.get("kind") or ch.get("action") or ""
+            label = (kind + " ") if kind else ""
+            print(MAG + "*" + R + " " + label + B + path + R, flush=True)
 
     def emit_todo(item: dict) -> None:
         items = item.get("items") or []
