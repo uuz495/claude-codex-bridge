@@ -1,24 +1,24 @@
 # claude-codex-bridge
 
-> An MCP server that lets [Claude Code](https://github.com/anthropics/claude-code) dispatch tasks to [OpenAI Codex](https://github.com/openai/codex) and [Google Gemini](https://github.com/google-gemini/gemini-cli) CLIs — with **fire-and-forget windowed execution** and **zero false "codex died" verdicts**.
+An MCP server that lets [Claude Code](https://github.com/anthropics/claude-code) dispatch tasks to [OpenAI Codex](https://github.com/openai/codex) and [Google Gemini](https://github.com/google-gemini/gemini-cli) CLIs. Window mode runs the codex process detached from the MCP server's lifecycle, so the bridge does not make pid-based liveness guesses about whether codex is still working.
 
-Status: **early — Phase 1 (refactor + open-source skeleton). README will expand with examples, screenshots, and a demo gif in Phase 2.**
+Status: Phase 1 — refactor + open-source skeleton. Tests, CI, examples, and screenshots are planned for Phase 2.
 
 ---
 
 ## Why
 
-Existing MCP wrappers for Codex / Gemini all have one of two failure modes:
+Two patterns are common in MCP wrappers around long-running CLIs like codex:
 
-1. **Synchronous block**: Claude calls the tool and is stuck for 30+ minutes waiting for Codex to finish. You can't ask Claude anything else, and if Codex hangs mid-run you have no way to tell what's wrong.
-2. **Background + pid polling**: the wrapper polls `pid_exists()` to check whether Codex is alive. But on Windows the pid recorded is usually a wrapper process (`wt.exe` → `cmd.exe` → `node.exe` → `codex.js`); the wrapper exits while the real Codex is still working, and the MCP wrongly reports **"codex died"** to Claude. Claude then tells you Codex is dead while Codex is busily fixing a bug in another window.
+1. **Synchronous block**. The wrapper awaits codex's exit before returning. The caller (e.g. Claude Code) blocks for the full duration of the task and cannot do anything else. If codex hangs there is no progress signal.
+2. **Background + pid polling**. The wrapper spawns codex in the background and a status tool polls the recorded pid with `pid_exists()`. On Windows the pid recorded is often a wrapper process (`wt.exe` → `cmd.exe` → `node.exe` → codex.js); the outer wrapper can exit while codex is still working. The status tool then reports codex as dead even though it is not.
 
-`claude-codex-bridge` introduces **window mode**:
+This server uses a third path, called *window mode*:
 
-- Codex runs in a `DETACHED_PROCESS` (Windows) / fork-detach (Unix) — completely independent of the MCP server's lifecycle.
-- A separate terminal window (wezterm > Windows Terminal > xterm) opens with a tail viewer rendering Codex's JSONL event stream in real time (ANSI colors + ASCII box-drawing, no Unicode dependency).
-- The MCP **never inspects Codex's pid**. Completion is detected by Codex writing its `--output-last-message` file.
-- `peek_codex(job_id)` reports **facts about the stream file** (silent for Xs / last event type / tool-call count / retry count) and never says "Codex is alive" or "Codex died" — that judgment is yours, from the viewer window.
+- Codex runs in a `DETACHED_PROCESS` (Windows) / fork-detached (Unix) child. The MCP server holds no handle to it.
+- A separate terminal window (wezterm, Windows Terminal, or xterm) opens running a tail viewer that renders codex's JSONL event stream — ANSI colors with ASCII box-drawing (no Unicode dependency).
+- The MCP server does not call `pid_exists()` or any equivalent. Completion is signalled by codex writing its `--output-last-message` file.
+- `peek_codex(job_id)` returns what the stream file shows: seconds since last write, last event type, tool-call count, retry count, accumulated errors. It does not report "codex is alive" or "codex died" — those judgements are left to the user looking at the viewer window.
 
 ---
 
@@ -59,41 +59,41 @@ Restart Claude Code, then ask Claude to dispatch a task:
 
 > Use `spawn_codex_window` to have Codex write a tail-recursive Fibonacci in `fib.py` and run 5 test cases.
 
-A new terminal window opens; Codex works in it. Claude returns the `job_id` immediately. Ask Claude `peek the codex job` whenever you want progress.
+A new terminal window opens; codex runs there. Claude returns the `job_id` immediately. Ask Claude to peek the job whenever you want progress.
 
 ---
 
 ## Tools
 
-### Recommended — Window mode
+### Window mode
 
 | Tool | Purpose |
 |---|---|
-| `spawn_codex_window(prompt, ...)` | Fire-and-forget Codex spawn + auto-opened viewer window. Returns `job_id` immediately. |
-| `peek_codex(job_id)` | Snapshot of stream state (no liveness verdict). |
-| `wait_for_codex(job_id, timeout_sec)` | Block until `last_message_file` appears, or timeout. |
+| `spawn_codex_window(prompt, ...)` | Spawn codex detached and open a viewer window. Returns `job_id` immediately. |
+| `peek_codex(job_id)` | Snapshot of stream state. Does not infer process liveness. |
+| `wait_for_codex(job_id, timeout_sec)` | Block until `last_message_file` is written, or timeout. |
 
 ### Gemini + parallel
 
 | Tool | Purpose |
 |---|---|
 | `spawn_gemini(prompt)` | One-shot Gemini CLI call. |
-| `spawn_parallel(tasks)` | Fan out N codex/gemini tasks concurrently. |
+| `spawn_parallel(tasks)` | Run N codex/gemini tasks concurrently. |
 
-### Legacy — synchronous / background
+### Other modes
 
-These work but have the failure modes described above. Use window mode unless you have a specific reason.
+These hold the codex process inside the MCP server's lifecycle. They are kept because they are simpler for short blocking calls and for interactive interruption of an in-flight session. If the MCP server restarts while one of these is running, the job is lost.
 
 | Tool | Notes |
 |---|---|
-| `spawn_codex` | Sync block on result. |
-| `spawn_codex_live` | Sync + live viewer window, but caller still blocks. |
-| `codex_inject(session_id, prompt)` | Interrupt a live session + resume with new prompt. |
-| `list_running_codex` | Enumerate live processes the bridge tracks. |
-| `spawn_codex_background` | Background asyncio task. Orphaned on MCP restart. |
+| `spawn_codex` | Sync block; returns codex's final output. |
+| `spawn_codex_live` | Sync block, plus a live viewer window. |
+| `codex_inject(session_id, prompt)` | Kill a running live session and resume it with a new prompt under the same session id. |
+| `list_running_codex` | List live processes the bridge is currently tracking. |
+| `spawn_codex_background` | Background asyncio task; returns a `job_id`. Orphaned on MCP restart. |
 | `poll_codex_job(job_id)` | Poll background job state. |
-| `list_codex_jobs` | List recent jobs. |
-| `cancel_codex_job` | Best-effort cancel (may hang — see Caveats). |
+| `list_codex_jobs` | List recent jobs (any mode). |
+| `cancel_codex_job` | Cancel a background job. Window-mode jobs cannot be cancelled this way; see Caveats. |
 
 ### Multi-account rotation (optional, gated)
 
@@ -108,7 +108,7 @@ Set `CCB_ENABLE_ROTATION=1` to expose these. Disabled by default.
 | `probe_all_accounts` | Run a trivial codex call per account to detect quota/ban state. |
 | `remove_codex_account(name)` | Remove from rotation. |
 
-> ⚠ **Heads-up**: pooling multiple ChatGPT Plus/Pro accounts to bypass rate limits may violate provider Terms of Service. The mechanism exists because it's useful for owning multiple legitimate accounts (e.g. personal + work). Don't use it to abuse the service.
+> Note: using multiple ChatGPT Plus/Pro accounts to extend rate limits may violate OpenAI's Terms of Service. Read your provider's terms before enabling this.
 
 ### Utility
 
@@ -139,11 +139,11 @@ All settings have built-in defaults. Override via env var or `~/.ai-bridge/confi
 
 ## Caveats / known issues
 
-- **Windows-first development**: most code paths assume Windows. Linux/macOS are supported but less tested. PRs welcome.
-- **`cancel_codex_job` can hang**: the underlying stream monitor doesn't always notice the process is dead. Window-mode jobs cannot be cancelled via this tool at all — close the viewer window or kill the PID externally.
-- **Non-ASCII cwd**: Codex CLI puts cwd into HTTP headers; non-ASCII bytes trigger a 5-retry-then-fail loop. Use `CCB_CWD_REMAPS` to map your path to an ASCII junction (Windows: `mklink /J C:\\ascii-alias D:\\real-path`).
-- **Stream JSONL is mixed with stderr**: Codex's internal `tracing` log (ERRORs, retries, Wall-time summaries) is interleaved with the JSONL event stream. The viewer suppresses noise by default; set `CCB_SHOW_TRACE=1` to see it.
-- **Window mode requires a terminal emulator**: wezterm, Windows Terminal (`wt`), or xterm/gnome-terminal. Falls back to a bare new console if none found.
+- **Windows-first**. Most code paths assume Windows. Linux/macOS are implemented but not regularly tested.
+- **`cancel_codex_job` is unreliable for stuck jobs**. The cancel path waits on the stream monitor, which can itself hang. Window-mode jobs are detached and cannot be cancelled through this tool — close the viewer or kill the PID externally.
+- **Non-ASCII cwd**. Codex CLI puts the working directory into HTTP headers; non-ASCII bytes trigger an upstream retry loop. Use `CCB_CWD_REMAPS` to map the path to an ASCII junction (Windows: `mklink /J C:\ascii-alias D:\real-path`).
+- **Stream is JSONL plus stderr**. Codex's internal `tracing` log (timestamps, retries, Wall-time summaries) is interleaved with the JSONL event stream. The viewer suppresses these lines by default; set `CCB_SHOW_TRACE=1` to surface them.
+- **Window mode needs a terminal emulator**. wezterm, Windows Terminal (`wt`), or xterm/gnome-terminal/alacritty/kitty. Falls back to a bare new console on Windows.
 
 ---
 
@@ -192,7 +192,5 @@ MIT — see [LICENSE](LICENSE).
 
 ## Roadmap
 
-- **Phase 1 (current)**: refactor monolith → package, config-ize hardcoded values, MIT license, baseline README.
-- **Phase 2**: smoke tests, GitHub Actions CI, full README with screenshots + demo gif, examples/ folder.
-
-Not aiming for HN front page; built for personal use and shared in case it's useful to someone else.
+- Phase 1 (current): refactor monolith into a package, move hardcoded values to config, MIT license, baseline README.
+- Phase 2: smoke tests, GitHub Actions CI, examples folder, screenshots and a demo recording in the README.
