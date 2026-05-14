@@ -42,6 +42,19 @@ pip install claude-codex-bridge
 }
 ```
 
+Or, if you'd rather not `pip install`, point at the bundled wrapper:
+
+```json
+{
+  "mcpServers": {
+    "claude-codex-bridge": {
+      "command": "python",
+      "args": ["/path/to/claude-codex-bridge/run.py"]
+    }
+  }
+}
+```
+
 Restart Claude Code, then ask Claude to dispatch a task:
 
 > Use `spawn_codex_window` to have Codex write a tail-recursive Fibonacci in `fib.py` and run 5 test cases.
