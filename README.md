@@ -15,8 +15,8 @@ Two patterns are common in MCP wrappers around long-running CLIs like codex:
 
 This server uses a third path, called *window mode*:
 
-- Codex runs in a `DETACHED_PROCESS` (Windows) / fork-detached (Unix) child. The MCP server holds no handle to it.
-- A separate terminal window (wezterm, Windows Terminal, or xterm) opens running a tail viewer that renders codex's JSONL event stream — ANSI colors with ASCII box-drawing (no Unicode dependency).
+- Codex runs as a Windows `DETACHED_PROCESS` child. The MCP server drops the process handle after spawning and does not supervise it.
+- A separate terminal window (wezterm or Windows Terminal) opens running a tail viewer that renders codex's JSONL event stream — ANSI colors with ASCII box-drawing (no Unicode dependency).
 - The MCP server does not call `pid_exists()` or any equivalent. Completion is signalled by codex writing its `--output-last-message` file.
 - `peek_codex(job_id)` returns what the stream file shows: seconds since last write, last event type, tool-call count, retry count, accumulated errors. It does not report "codex is alive" or "codex died" — those judgements are left to the user looking at the viewer window.
 
@@ -139,11 +139,11 @@ All settings have built-in defaults. Override via env var or `~/.ai-bridge/confi
 
 ## Caveats / known issues
 
-- **Windows-first**. Most code paths assume Windows. Linux/macOS are implemented but not regularly tested.
+- **Windows-only at the moment**. Tested only on Windows 11. Linux/macOS code branches exist in the source (for `subprocess.Popen` defaults, `mklink`-style symlinks, xterm/gnome-terminal/alacritty/kitty launching) but have never been exercised end-to-end. Treat Unix support as unverified.
 - **`cancel_codex_job` is unreliable for stuck jobs**. The cancel path waits on the stream monitor, which can itself hang. Window-mode jobs are detached and cannot be cancelled through this tool — close the viewer or kill the PID externally.
 - **Non-ASCII cwd**. Codex CLI puts the working directory into HTTP headers; non-ASCII bytes trigger an upstream retry loop. Use `CCB_CWD_REMAPS` to map the path to an ASCII junction (Windows: `mklink /J C:\ascii-alias D:\real-path`).
 - **Stream is JSONL plus stderr**. Codex's internal `tracing` log (timestamps, retries, Wall-time summaries) is interleaved with the JSONL event stream. The viewer suppresses these lines by default; set `CCB_SHOW_TRACE=1` to surface them.
-- **Window mode needs a terminal emulator**. wezterm, Windows Terminal (`wt`), or xterm/gnome-terminal/alacritty/kitty. Falls back to a bare new console on Windows.
+- **Window mode needs a terminal emulator**. On Windows: wezterm, Windows Terminal (`wt`), or a bare new console as last fallback. Wezterm is preferred for its UTF-8 / ANSI handling.
 
 ---
 
