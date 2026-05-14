@@ -1,5 +1,7 @@
 # claude-codex-bridge
 
+**English** | [简体中文](README.zh-CN.md)
+
 An MCP server that lets [Claude Code](https://github.com/anthropics/claude-code) dispatch tasks to [OpenAI Codex](https://github.com/openai/codex) and [Google Gemini](https://github.com/google-gemini/gemini-cli) CLIs. Window mode runs the codex process detached from the MCP server's lifecycle, so the bridge does not make pid-based liveness guesses about whether codex is still working.
 
 Status: Phase 1 — refactor + open-source skeleton. Tests, CI, examples, and screenshots are planned for Phase 2.
