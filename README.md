@@ -4,9 +4,7 @@
 
 <sub>[简体中文](README.zh-CN.md)</sub>
 
-<!-- Demo recording: pending Phase 2. -->
-
-- **Sync-block wrappers** make Claude wait minutes-to-hours for codex to finish; the MCP call holds, and you can't ask Claude anything else.
+- **Sync wrappers** block the MCP call until codex finishes — Claude can't do anything else for minutes to hours.
 - **Background + pid-polling wrappers** check codex's recorded pid. On Windows that pid is usually a wrapper process (`wt.exe` → `cmd.exe` → `node.exe` → codex.js) that exits early — so status tools report "codex died" while codex is still working.
 - **Window mode** here detaches codex from the MCP server's lifecycle (`DETACHED_PROCESS`), opens a separate terminal window streaming codex's events, and detects completion from a file codex writes itself — never from a pid. Codex outlives the MCP server, and the bridge does not make liveness guesses.
 
@@ -30,7 +28,7 @@ Register with Claude Code — add to `~/.claude.json` under `mcpServers`:
 }
 ```
 
-Restart Claude Code. That's it — 14 tools become available with the `mcp__claude-codex-bridge__` prefix.
+Restart Claude Code. 14 tools appear under the `mcp__claude-codex-bridge__` prefix.
 
 ## Example
 
@@ -38,13 +36,7 @@ Ask Claude:
 
 > Use `spawn_codex_window` to have Codex write a binary-search Fibonacci to `fib.py` and run 10 tests.
 
-What you'll see:
-
-1. Claude calls `spawn_codex_window` and gets back `{ job_id: "j-xxxxxxxxxx", window_opened: true, ... }` in well under a second.
-2. A wezterm window opens, streaming codex's reasoning, tool calls, and file edits in real time.
-3. Claude replies "dispatched, job is `j-xxxxxxxxxx`, viewer is open".
-4. Whenever you ask "how's it going?", Claude calls `peek_codex(job_id)` and tells you what's changed.
-5. When codex writes its final message, `wait_for_codex` returns or the next `peek_codex` shows `completed: true` with the result.
+Claude gets a `job_id` back immediately. A wezterm window opens streaming codex's reasoning, tool calls, and file edits. `peek_codex(job_id)` reports stream state any time; `wait_for_codex(job_id)` blocks until codex writes its final-message file. Neither talks to the codex process.
 
 ## Tools
 
@@ -74,7 +66,7 @@ What you'll see:
 <details>
 <summary><b>Other modes</b> — sync / background, 8 tools</summary>
 
-These hold the codex process inside the MCP server's lifecycle. Kept because they are simpler for short blocking calls and for interactive interruption. If the MCP server restarts while one of these is running, the job is lost.
+Codex runs inside the MCP server's process. Simpler for short blocking calls; lost if the MCP server restarts.
 
 | Tool | Notes |
 |---|---|
@@ -92,7 +84,7 @@ These hold the codex process inside the MCP server's lifecycle. Kept because the
 <details>
 <summary><b>Multi-account rotation</b> — optional, off by default, 6 tools</summary>
 
-Set `CCB_ENABLE_ROTATION=1` to expose these. Disabled by default.
+Set `CCB_ENABLE_ROTATION=1` to expose these.
 
 | Tool | Purpose |
 |---|---|
@@ -118,35 +110,33 @@ Set `CCB_ENABLE_ROTATION=1` to expose these. Disabled by default.
 
 ## Recommended patterns
 
-### Auto-poll progress with `/loop`
-
-After dispatching a long job, have Claude check on it for you instead of asking by hand:
+### Auto-poll with `/loop`
 
 ```
 /loop 10m peek codex job j-xxxxxxxxxx and tell me what changed since last time
 ```
 
-Claude wakes itself every 10 minutes, calls `peek_codex`, and reports new tool calls / file changes / completion. Stop the loop when codex finishes.
+Claude wakes every 10 minutes, calls `peek_codex`, reports new tool calls / file changes / completion.
 
-### Block-until-done with `wait_for_codex`
+### Block until done
 
-For tasks where Claude has follow-up work after codex finishes (review, commit, dispatch next phase), dispatch and wait in the same turn:
+Dispatch + wait in one turn when Claude has follow-up work after codex finishes:
 
 > Spawn codex with this HANDOFF, then `wait_for_codex` with timeout 5400s. When it returns, read the final message and tell me whether the acceptance criteria are met.
 
-Claude blocks inside the tool call until the `last_message_file` appears. You can leave the chat; Claude picks up the review step automatically.
+Claude blocks until `last_message_file` appears, then continues with the review.
 
-### Have codex self-verify
+### Self-verify
 
-Phrase the prompt so codex produces a machine-parseable verdict before it stops:
+Have codex end its final message with a parseable verdict:
 
-> Implement the change. Run `pytest tests/test_X.py` afterwards. The run is only acceptable if every test passes. End the final message with `STATUS: PASS` or `STATUS: FAIL: <reason>`.
+> Implement the change. Run `pytest tests/test_X.py`. End the final message with `STATUS: PASS` or `STATUS: FAIL: <reason>`.
 
-`peek_codex(...)["final_message"]` then carries a verdict instead of free-form prose.
+`peek_codex(...)["final_message"]` then carries that line directly.
 
 ### Chain phases via `session_id`
 
-For multi-step work, pass the previous `session_id` into the next `spawn_codex_window` so codex inherits the prior reasoning + tool history:
+Pass the previous `session_id` into the next `spawn_codex_window` to inherit reasoning + tool history:
 
 > Spawn codex with prompt P1. After it returns session_id S, spawn another window with `session_id=S` and prompt P2.
 
@@ -204,14 +194,8 @@ wezterm new-window:  python tail_viewer.py <stream>
 git clone https://github.com/uuz495/claude-codex-bridge
 cd claude-codex-bridge
 pip install -e .[dev]
-pytest                       # tests are coming in Phase 2
 ruff check .
 ```
-
-## Roadmap
-
-- **Phase 1 (current)**: refactor monolith into a package, move hardcoded values to config, MIT license, baseline README.
-- **Phase 2**: smoke tests, GitHub Actions CI, examples folder, screenshots, and a demo recording in the README.
 
 ## License
 

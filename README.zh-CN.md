@@ -4,9 +4,7 @@
 
 <sub>[English](README.md)</sub>
 
-<!-- Demo 录屏: 待 Phase 2。 -->
-
-- **同步阻塞型 wrapper** 让 Claude 等 codex 跑完才返回。整段 MCP 调用挂着，Claude 在那里干不了别的。
+- **同步阻塞型 wrapper** 卡住 MCP 调用直到 codex 跑完 —— Claude 在那段时间干不了别的。
 - **后台 + pid 轮询型 wrapper** 用 `pid_exists()` 检查 codex 进程死活。Windows 上记录的 pid 通常是外层包装（`wt.exe` → `cmd.exe` → `node.exe` → codex.js），外层退出时内层 codex 还在干活 —— status 工具就误报 "codex 死了"，但其实没死。
 - **Window mode** 把 codex 进程从 MCP server 生命周期里 detach 出去（`DETACHED_PROCESS`），开一个独立终端窗口流式渲染事件，完成检测靠 codex 自己写的文件，**永远不查 pid**。Codex 比 MCP server 活得久，桥不做生死推断。
 
@@ -30,7 +28,7 @@ git clone https://github.com/uuz495/claude-codex-bridge
 }
 ```
 
-重启 Claude Code 就行。14 个工具以 `mcp__claude-codex-bridge__` 前缀注册进来。
+重启 Claude Code。14 个工具以 `mcp__claude-codex-bridge__` 前缀注册进来。
 
 ## 示例
 
@@ -38,13 +36,7 @@ git clone https://github.com/uuz495/claude-codex-bridge
 
 > 用 `spawn_codex_window` 让 codex 写一个二分 Fibonacci 到 `fib.py` 然后跑 10 个测试。
 
-你会看到：
-
-1. Claude 调 `spawn_codex_window`，瞬间拿到 `{ job_id: "j-xxxxxxxxxx", window_opened: true, ... }`。
-2. 弹出一个 wezterm 窗口，实时流 codex 的推理 / tool call / 文件改动。
-3. Claude 回复 "派出去了，job_id `j-xxxxxxxxxx`，viewer 已开"。
-4. 你随时问 "怎么样了？"，Claude 调 `peek_codex(job_id)` 报变化。
-5. codex 写出 final message 时，`wait_for_codex` 返回，或下一次 `peek_codex` 显示 `completed: true` + 最终结果。
+Claude 瞬间拿到 `job_id`。一个 wezterm 窗口弹出，流式渲染 codex 的推理 / tool call / 文件改动。`peek_codex(job_id)` 随时查 stream 状态，`wait_for_codex(job_id)` 阻塞等 codex 写出 final message 文件。两者都不跟 codex 进程通讯。
 
 ## 工具
 
@@ -74,7 +66,7 @@ git clone https://github.com/uuz495/claude-codex-bridge
 <details>
 <summary><b>其他模式</b> —— 同步 / 后台，8 个工具</summary>
 
-这些把 codex 进程握在 MCP server 自己的生命周期里。保留是因为短阻塞调用、交互式打断在飞 session 这种用法更简单。MCP server 重启时这类 job 会丢。
+Codex 在 MCP server 进程里跑。短阻塞调用更简单；MCP 重启就丢。
 
 | 工具 | 备注 |
 |---|---|
@@ -92,7 +84,7 @@ git clone https://github.com/uuz495/claude-codex-bridge
 <details>
 <summary><b>多账号轮换</b> —— 可选，默认关，6 个工具</summary>
 
-设 `CCB_ENABLE_ROTATION=1` 才暴露这些工具。默认禁用。
+设 `CCB_ENABLE_ROTATION=1` 才暴露这些工具。
 
 | 工具 | 用途 |
 |---|---|
@@ -118,35 +110,33 @@ git clone https://github.com/uuz495/claude-codex-bridge
 
 ## 推荐用法
 
-### 用 `/loop` 自动轮询进度
-
-派完长任务后，让 Claude 帮你定期看，不用自己问：
+### 用 `/loop` 自动轮询
 
 ```
 /loop 10m peek codex job j-xxxxxxxxxx and tell me what changed since last time
 ```
 
-Claude 每 10 分钟自动唤醒一次，调 `peek_codex`，报新增的 tool call / file change / 完成状态。codex 干完了就 stop loop。
+Claude 每 10 分钟唤醒一次，调 `peek_codex`，报新 tool call / file change / 完成状态。
 
-### 用 `wait_for_codex` 阻塞等
+### 阻塞等完成
 
-如果 codex 跑完后 Claude 还有后续工作（review、commit、派下一个 phase），在同一轮里 dispatch + wait：
+Codex 跑完后 Claude 还有后续工作（review、commit、派下一个 phase）时，同一轮里 dispatch + wait：
 
 > 用这个 HANDOFF spawn codex，然后 `wait_for_codex` timeout 5400s。等返回后读 final message 告诉我是否满足验收标准。
 
-Claude 在 wait 调用里阻塞着等 `last_message_file` 出现。你可以离开对话；Claude 自己接 review 步骤。
+Claude 阻塞等 `last_message_file` 出现，然后接 review 步骤。
 
 ### 让 codex 自验证
 
-Prompt 写法上让 codex 在退出前给一个机器可解析的判定：
+让 codex 在 final message 末尾输出可解析的判定：
 
-> 实现改动。之后跑 `pytest tests/test_X.py`。所有测试通过才算成功。最终消息末尾用 `STATUS: PASS` 或 `STATUS: FAIL: <reason>`。
+> 实现改动。之后跑 `pytest tests/test_X.py`。最终消息末尾用 `STATUS: PASS` 或 `STATUS: FAIL: <reason>`。
 
-`peek_codex(...)["final_message"]` 就带一个明确判定，可被解析。
+`peek_codex(...)["final_message"]` 直接带这一行。
 
-### 通过 `session_id` 串接多步任务
+### 通过 `session_id` 串接多步
 
-多步任务里把上一步的 `session_id` 传给下一个 `spawn_codex_window`，codex 会继承之前的推理 + 工具调用历史：
+把上一步的 `session_id` 传给下一个 `spawn_codex_window`，继承之前的推理 + 工具调用历史：
 
 > 先用 prompt P1 spawn codex。拿到返回的 session_id S 后，用 `session_id=S` + prompt P2 spawn 另一个窗口。
 
@@ -204,14 +194,8 @@ wezterm new-window:  python tail_viewer.py <stream>
 git clone https://github.com/uuz495/claude-codex-bridge
 cd claude-codex-bridge
 pip install -e .[dev]
-pytest                       # 测试还在 Phase 2 写
 ruff check .
 ```
-
-## Roadmap
-
-- **Phase 1（当前）**：把单文件重构成 package，把硬编码值移到 config，MIT 协议，基础 README。
-- **Phase 2**：smoke tests、GitHub Actions CI、examples 文件夹、README 加截图和 demo 录屏。
 
 ## License
 
