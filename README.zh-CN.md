@@ -4,10 +4,7 @@
 
 <sub>[English](README.md)</sub>
 
-<!-- Demo 录屏会在 Phase 2 加上。 -->
-<!-- 暂时方案：手动开个 wezterm 跑 python tail_viewer.py <stream>，用 spawn_codex_window 派一个任务看效果。 -->
-
-## 为什么写这个
+<!-- Demo 录屏: 待 Phase 2。 -->
 
 - **同步阻塞型 wrapper** 让 Claude 等 codex 跑完才返回。整段 MCP 调用挂着，Claude 在那里干不了别的。
 - **后台 + pid 轮询型 wrapper** 用 `pid_exists()` 检查 codex 进程死活。Windows 上记录的 pid 通常是外层包装（`wt.exe` → `cmd.exe` → `node.exe` → codex.js），外层退出时内层 codex 还在干活 —— status 工具就误报 "codex 死了"，但其实没死。
@@ -51,7 +48,7 @@ git clone https://github.com/uuz495/claude-codex-bridge
 
 ## 工具
 
-14 个工具（开启多账号后 20 个）。按模式分组，点开看详情。
+14 个工具（开启多账号后 20 个）。
 
 <details>
 <summary><b>Window 模式</b> —— 推荐路径，3 个工具</summary>
@@ -121,8 +118,6 @@ git clone https://github.com/uuz495/claude-codex-bridge
 
 ## 推荐用法
 
-几个跟 window 模式搭配得不错的工作流模式。这些是工具之上的约定，不是 bridge 本身的功能。
-
 ### 用 `/loop` 自动轮询进度
 
 派完长任务后，让 Claude 帮你定期看，不用自己问：
@@ -157,7 +152,7 @@ Prompt 写法上让 codex 在退出前给一个机器可解析的判定：
 
 ## 配置
 
-所有设置都有内置默认值。可通过环境变量或 `~/.ai-bridge/config.json` 覆盖。优先级：env > config 文件 > 默认。
+通过环境变量或 `~/.ai-bridge/config.json` 覆盖默认值。优先级：env > config 文件 > 默认。
 
 | 设置 | 环境变量 | 默认 | 用途 |
 |---|---|---|---|

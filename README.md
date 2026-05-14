@@ -4,10 +4,7 @@
 
 <sub>[简体中文](README.zh-CN.md)</sub>
 
-<!-- A demo recording will live here once Phase 2 lands.  -->
-<!-- For now: open a wezterm window, run python tail_viewer.py <stream>, dispatch a job with spawn_codex_window. -->
-
-## Why
+<!-- Demo recording: pending Phase 2. -->
 
 - **Sync-block wrappers** make Claude wait minutes-to-hours for codex to finish; the MCP call holds, and you can't ask Claude anything else.
 - **Background + pid-polling wrappers** check codex's recorded pid. On Windows that pid is usually a wrapper process (`wt.exe` → `cmd.exe` → `node.exe` → codex.js) that exits early — so status tools report "codex died" while codex is still working.
@@ -51,7 +48,7 @@ What you'll see:
 
 ## Tools
 
-14 tools (20 with multi-account rotation enabled). Grouped by mode — click a section to expand.
+14 tools (20 with multi-account rotation enabled).
 
 <details>
 <summary><b>Window mode</b> — recommended path, 3 tools</summary>
@@ -121,8 +118,6 @@ Set `CCB_ENABLE_ROTATION=1` to expose these. Disabled by default.
 
 ## Recommended patterns
 
-A few workflow conventions that pair well with window mode. These are how the tools compose — not features of the bridge itself.
-
 ### Auto-poll progress with `/loop`
 
 After dispatching a long job, have Claude check on it for you instead of asking by hand:
@@ -157,7 +152,7 @@ For multi-step work, pass the previous `session_id` into the next `spawn_codex_w
 
 ## Configuration
 
-All settings have built-in defaults. Override via env var or `~/.ai-bridge/config.json`. Env wins over file wins over default.
+Override defaults via env var or `~/.ai-bridge/config.json`. Env wins over file wins over default.
 
 | Setting | Env var | Default | Purpose |
 |---|---|---|---|
