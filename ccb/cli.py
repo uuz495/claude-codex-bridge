@@ -26,9 +26,15 @@ def resolve_cli(name: str) -> str | None:
 
 
 def resolve_node_cli(name: str) -> list[str] | None:
-    """Extract `node <entry>.js` from a Windows npm .cmd shim.
+    """Extract `node <entry>.js` (or `.mjs` / `.cjs`) from a Windows npm .cmd shim.
 
-    Returns None on non-Windows; caller should fall back to resolve_cli().
+    Going through the .cmd → cmd.exe → node chain breaks stdout redirection on
+    DETACHED_PROCESS spawns (the child Node inherits a console-bound stdout, not
+    the file fd Python handed us). Calling `node <entry>` directly preserves the
+    fd. Returns None on non-Windows; caller should fall back to resolve_cli().
+
+    Matches both .js and .mjs/.cjs so user-installed shims (e.g. a model-rewrite
+    wrapper) are still preferred over the raw .cmd.
     """
     if not IS_WINDOWS:
         return None
@@ -39,7 +45,7 @@ def resolve_node_cli(name: str) -> list[str] | None:
         text = Path(cmd_shim).read_text(encoding="utf-8", errors="replace")
     except Exception:
         return None
-    m = re.search(r'"%dp0%\\([^"]+\.js)"', text)
+    m = re.search(r'"%dp0%\\([^"]+\.(?:m?js|cjs))"', text)
     if not m:
         return None
     js_rel = m.group(1).replace("/", "\\")
