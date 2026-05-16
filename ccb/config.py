@@ -15,7 +15,7 @@ _DEFAULTS: dict[str, Any] = {
     "codex_model": "gpt-5",
     "codex_reasoning_effort": "medium",
     "codex_reasoning_summary": "auto",
-    "codex_fast_mode": False,
+    "codex_fast_mode": True,
     "default_timeout_sec": 1800,
     "enable_multi_account": False,
     "summary_tail_enabled": True,
