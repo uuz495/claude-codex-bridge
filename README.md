@@ -5,8 +5,8 @@
 <sub>[简体中文](README.zh-CN.md)</sub>
 
 - One tool to spawn (`spawn_codex`), with two flags (`wait` / `with_window`) for mode selection — no juggling four near-identical entry points.
-- Default mode opens a new terminal tab (wezterm / Windows Terminal / Unix x-terminal-emulator) and runs `codex --yolo "<prompt>"` directly with a real TTY. What you see IS codex's native TUI — `apply_patch` blocks, inline diffs, command output, reasoning summaries — all rendered by codex itself, not by a re-rendering layer.
-- Parallel spawns share one terminal window via tabs (wezterm CLI / `wt new-tab`) instead of scattering across many windows.
+- Default mode opens a new terminal tab (Windows Terminal / wezterm / Unix x-terminal-emulator) and runs `codex --yolo "<prompt>"` directly with a real TTY. What you see IS codex's native TUI — `apply_patch` blocks, inline diffs, command output, reasoning summaries — all rendered by codex itself, not by a re-rendering layer.
+- Parallel spawns share one terminal window via tabs (`wt new-tab` is preferred on Windows because it joins the most-recent window without an IPC handshake; wezterm is fallback).
 - The bridge tracks completion via codex's own session rollout file at `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<sid>.jsonl`. Never queries process pid; codex outlives the MCP server.
 
 ## Quick start
@@ -138,7 +138,7 @@ spawn_codex                response_item/function_call_output carries
 (with_window=True)         full captured stdout)
    |
    v
-wezterm tab / wt new-tab / new-console:
+wt new-tab / wezterm tab / new-console:
    node <codex>/bin/codex.js --yolo -m gpt-5.5 -c ... "<prompt>"
    (real PTY, codex's native TUI in the foreground)
 ```
@@ -151,7 +151,7 @@ wezterm tab / wt new-tab / new-console:
 - **Codex TUI doesn't auto-exit on task complete**. After the task finishes the TUI sits at the next-input prompt waiting for follow-up — `wait_for_codex` returns as soon as `task_complete` appears in the rollout, but the window stays open. Close it manually (Ctrl+C / close window).
 - **`cancel_codex_job` only flips metadata for window-mode jobs**. The codex process is detached and the bridge has no handle — close the terminal window to actually stop codex.
 - **Non-ASCII cwd**. Codex CLI puts the working directory into HTTP headers; non-ASCII bytes trigger an upstream retry loop. Use `CCB_CWD_REMAPS` to map the path to an ASCII junction (Windows: `mklink /J C:\ascii-alias D:\real-path`).
-- **Needs a terminal emulator on PATH** (when `with_window=True`). Detection order: wezterm > Windows Terminal (`wt`) > bare new console (Windows) / `x-terminal-emulator` / `gnome-terminal` / `xterm` / `alacritty` / `kitty` / `wezterm` (Unix). wezterm is preferred for UTF-8 / ANSI handling.
+- **Needs a terminal emulator on PATH** (when `with_window=True`). Detection order on Windows: **Windows Terminal (`wt`)** → wezterm → bare new console. `wt` is preferred because its `new-tab` reliably attaches to the most-recent window without IPC, so parallel spawns share one window cleanly. wezterm's tab attach requires `wezterm-mux-server` and a registered GUI; standalone wezterm GUIs (the common case) end up spawning new windows. Unix detection: `x-terminal-emulator` / `gnome-terminal` / `xterm` / `alacritty` / `kitty` / `wezterm`.
 - **Legacy sync mode (`wait=True, with_window=False`) still uses `codex exec --json`** and inherits its quirks (no inline diffs, a real codex 0.130 bug where parallel `command_execution` events can lose their `item.completed` signal). Prefer the default window mode for non-trivial work.
 
 ## Development

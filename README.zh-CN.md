@@ -5,8 +5,8 @@
 <sub>[English](README.md)</sub>
 
 - 一个 spawn 工具（`spawn_codex`）+ 两个 flag（`wait` / `with_window`）选模式 —— 不用在 4 个长得差不多的工具里挑。
-- 默认模式开一个新终端 tab（wezterm / Windows Terminal / Unix x-terminal-emulator），直接跑 `codex --yolo "<prompt>"`，TTY 是真的。你看到的就是 codex 自己的 TUI —— `apply_patch` 块、inline diff、命令输出、reasoning summary —— 全部 codex 自己渲染，不经任何中间层。
-- 并行 spawn 自动堆 tab 到同一个终端窗口（wezterm CLI / `wt new-tab`），不会到处弹小窗口。
+- 默认模式开一个新终端 tab（Windows Terminal / wezterm / Unix x-terminal-emulator），直接跑 `codex --yolo "<prompt>"`，TTY 是真的。你看到的就是 codex 自己的 TUI —— `apply_patch` 块、inline diff、命令输出、reasoning summary —— 全部 codex 自己渲染，不经任何中间层。
+- 并行 spawn 自动堆 tab 到同一个终端窗口（Windows 优先 `wt new-tab` —— 不用 IPC 握手就能接最近的 wt 窗口；wezterm 作 fallback）。
 - Bridge 通过 codex 自己的 session rollout 文件 `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<sid>.jsonl` 跟踪完成状态。**不查 codex pid**，codex 比 MCP server 活得久。
 
 ## 快速开始
@@ -138,7 +138,7 @@ spawn_codex                response_item/function_call_output 带完整 stdout)
 (with_window=True)
    |
    v
-wezterm tab / wt new-tab / new-console:
+wt new-tab / wezterm tab / new-console:
    node <codex>/bin/codex.js --yolo -m gpt-5.5 -c ... "<prompt>"
    (真 PTY, codex native TUI 前台运行)
 ```
@@ -151,7 +151,7 @@ wezterm tab / wt new-tab / new-console:
 - **Codex TUI 跑完不会自动退出**。任务完成后 TUI 停在等下一条用户输入的状态 —— `wait_for_codex` 一看到 rollout 里的 `task_complete` 就立刻返回，但窗口还开着。手动关（Ctrl+C / 关窗口）。
 - **`cancel_codex_job` 对 window 模式 job 只改 metadata**。codex 进程是 detach 的 bridge 没 handle —— 真要停 codex 就关终端窗口。
 - **非 ASCII cwd**。Codex CLI 把工作目录塞 HTTP header，非 ASCII 字节触发上游 retry 循环。用 `CCB_CWD_REMAPS` 把路径映射到 ASCII junction（Windows：`mklink /J C:\ascii-alias D:\real-path`）。
-- **需要终端模拟器在 PATH**（`with_window=True` 时）。检测顺序：wezterm > Windows Terminal (`wt`) > 裸新 console（Windows）/ `x-terminal-emulator` / `gnome-terminal` / `xterm` / `alacritty` / `kitty` / `wezterm`（Unix）。优先 wezterm，UTF-8 / ANSI 处理更稳。
+- **需要终端模拟器在 PATH**（`with_window=True` 时）。Windows 检测顺序：**Windows Terminal (`wt`)** → wezterm → 裸新 console。优先 `wt` 是因为 `new-tab` 不用 IPC 就能接最近的窗口，并行 spawn 干净地共享一个窗口；wezterm 的 tab attach 要 `wezterm-mux-server` + 已注册的 GUI，standalone wezterm GUI（常见情况）只能开新窗。Unix 检测：`x-terminal-emulator` / `gnome-terminal` / `xterm` / `alacritty` / `kitty` / `wezterm`。
 - **Legacy 同步模式（`wait=True, with_window=False`）仍走 `codex exec --json`**，继承它的局限（没 inline diff，codex 0.130 真 bug —— 并发 `command_execution` 事件可能丢 `item.completed`）。非平凡任务用默认 window 模式。
 
 ## 开发
