@@ -105,6 +105,72 @@ def _codex_tui_flags() -> list[str]:
     return flags
 
 
+def _wezterm_gui_pids() -> list[int]:
+    """Return PIDs of running wezterm-gui processes, newest first."""
+    try:
+        if IS_WINDOWS:
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "Get-Process wezterm-gui -ErrorAction SilentlyContinue | "
+                 "Sort-Object StartTime -Descending | Select-Object -ExpandProperty Id"],
+                capture_output=True, text=True, timeout=4,
+            )
+        else:
+            r = subprocess.run(
+                ["pgrep", "-x", "wezterm-gui"],
+                capture_output=True, text=True, timeout=4,
+            )
+        if r.returncode != 0:
+            return []
+        return [int(p) for p in r.stdout.split() if p.strip().isdigit()]
+    except Exception:
+        return []
+
+
+def _try_wezterm_cli_spawn(
+    wezterm: str, codex_argv: list[str], cwd: str, env: dict,
+) -> bool:
+    """Try to attach as a tab to ANY running wezterm-gui via its IPC socket.
+
+    Multiple wezterm-gui processes can coexist (each with its own socket).
+    `wezterm cli` only consults one socket at a time, defaulting to whichever
+    name is baked into the binary's runtime config — often a stale PID. We
+    iterate through every live wezterm-gui PID and try its socket explicitly
+    via WEZTERM_UNIX_SOCKET until one succeeds.
+    """
+    pids = _wezterm_gui_pids()
+    if not pids:
+        return False
+    # Socket location: %TEMP%/gui-sock-<pid> on Windows; runtime dir on Unix.
+    sock_dir_candidates = []
+    if IS_WINDOWS:
+        for var in ("TEMP", "TMP"):
+            if env.get(var):
+                sock_dir_candidates.append(Path(env[var]))
+        sock_dir_candidates.append(Path.home() / "AppData/Local/Temp")
+    else:
+        if env.get("XDG_RUNTIME_DIR"):
+            sock_dir_candidates.append(Path(env["XDG_RUNTIME_DIR"]))
+        sock_dir_candidates.append(Path("/tmp"))
+    for pid in pids:
+        for sock_dir in sock_dir_candidates:
+            sock_path = sock_dir / f"gui-sock-{pid}"
+            if not sock_path.exists():
+                continue
+            child_env = dict(env)
+            child_env["WEZTERM_UNIX_SOCKET"] = str(sock_path)
+            try:
+                r = subprocess.run(
+                    [wezterm, "cli", "spawn", "--cwd", cwd, "--", *codex_argv],
+                    env=child_env, capture_output=True, timeout=5,
+                )
+                if r.returncode == 0:
+                    return True
+            except Exception:
+                continue
+    return False
+
+
 def _spawn_codex_in_new_terminal(
     codex_argv: list[str],
     cwd: str,
@@ -119,26 +185,12 @@ def _spawn_codex_in_new_terminal(
     if IS_WINDOWS:
         CREATE_NEW_CONSOLE = 0x00000010
 
-        wezterm = shutil.which("wezterm") or shutil.which("wezterm.exe")
-        if wezterm:
-            try:
-                r = subprocess.run(
-                    [wezterm, "cli", "spawn", "--cwd", cwd, "--", *codex_argv],
-                    env=env, capture_output=True, timeout=4,
-                )
-                if r.returncode == 0:
-                    return True, "wezterm-tab"
-            except Exception:
-                pass
-            try:
-                subprocess.Popen(
-                    [wezterm, "start", "--new-tab", "--cwd", cwd, "--", *codex_argv],
-                    env=env,
-                )
-                return True, "wezterm"
-            except Exception:
-                pass
-
+        # Windows Terminal first: `wt new-tab` reliably attaches to the most
+        # recently used wt window with no IPC handshake. wezterm requires
+        # connecting to a running mux-server via WEZTERM_UNIX_SOCKET, which
+        # fails when the user has standalone wezterm-gui processes (spawned
+        # without mux integration) — exactly the situation parallel bridge
+        # spawns produce when several windows already exist.
         wt = shutil.which("wt") or shutil.which("wt.exe")
         if wt:
             try:
@@ -148,6 +200,19 @@ def _spawn_codex_in_new_terminal(
                     env=env,
                 )
                 return True, "wt"
+            except Exception:
+                pass
+
+        wezterm = shutil.which("wezterm") or shutil.which("wezterm.exe")
+        if wezterm:
+            if _try_wezterm_cli_spawn(wezterm, codex_argv, cwd, env):
+                return True, "wezterm-tab"
+            try:
+                subprocess.Popen(
+                    [wezterm, "start", "--new-tab", "--cwd", cwd, "--", *codex_argv],
+                    env=env,
+                )
+                return True, "wezterm"
             except Exception:
                 pass
 
@@ -170,15 +235,8 @@ def _spawn_codex_in_new_terminal(
                 subprocess.Popen([path, "--working-directory", cwd, "--tab",
                                   "--", *codex_argv], env=env)
             elif term == "wezterm":
-                try:
-                    r = subprocess.run(
-                        [path, "cli", "spawn", "--cwd", cwd, "--", *codex_argv],
-                        env=env, capture_output=True, timeout=4,
-                    )
-                    if r.returncode == 0:
-                        return True, "wezterm-tab"
-                except Exception:
-                    pass
+                if _try_wezterm_cli_spawn(path, codex_argv, cwd, env):
+                    return True, "wezterm-tab"
                 subprocess.Popen([path, "start", "--new-tab", "--cwd", cwd,
                                   "--", *codex_argv], env=env)
             else:
