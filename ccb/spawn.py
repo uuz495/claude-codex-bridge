@@ -79,9 +79,17 @@ def extract_session_id_from_jsonl(line: str) -> str | None:
 
 
 def codex_pinned_flags() -> list[str]:
-    """Model / reasoning / fast-mode flags from config."""
+    """Model / reasoning / fast-mode flags from config.
+
+    `model_reasoning_summary=auto` (default) makes codex emit a textual
+    reasoning summary inside `reasoning` items in --json mode, so the viewer
+    has an opening "what I'm about to do" block to render. The user's own
+    ~/.codex/config.toml may pin `summary=none` for TUI runs — we override
+    on each spawn so bridge windows always have visible commentary.
+    """
     flags = ["-m", str(config.get("codex_model")),
-             "-c", "model_reasoning_effort=" + str(config.get("codex_reasoning_effort"))]
+             "-c", "model_reasoning_effort=" + str(config.get("codex_reasoning_effort")),
+             "-c", "model_reasoning_summary=" + str(config.get("codex_reasoning_summary"))]
     if config.get("codex_fast_mode"):
         flags += ["--enable", "fast_mode"]
     return flags

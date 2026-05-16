@@ -14,6 +14,7 @@ from .paths import CONFIG_FILE
 _DEFAULTS: dict[str, Any] = {
     "codex_model": "gpt-5",
     "codex_reasoning_effort": "medium",
+    "codex_reasoning_summary": "auto",
     "codex_fast_mode": False,
     "default_timeout_sec": 1800,
     "enable_multi_account": False,
@@ -27,6 +28,7 @@ _DEFAULTS: dict[str, Any] = {
 _ENV_MAP = {
     "codex_model": "CCB_CODEX_MODEL",
     "codex_reasoning_effort": "CCB_REASONING_EFFORT",
+    "codex_reasoning_summary": "CCB_REASONING_SUMMARY",
     "codex_fast_mode": "CCB_FAST_MODE",
     "default_timeout_sec": "CCB_DEFAULT_TIMEOUT",
     "enable_multi_account": "CCB_ENABLE_ROTATION",
