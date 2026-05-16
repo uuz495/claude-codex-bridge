@@ -120,19 +120,36 @@ def _spawn_codex_in_new_terminal(
     cwd: str,
     env: dict,
 ) -> tuple[bool, str]:
-    """Open a new terminal window running `codex_argv` with a real TTY.
+    """Open a terminal tab running `codex_argv` with a real TTY.
 
-    Order of preference: wezterm > Windows Terminal (wt) > xterm-family on Unix
-    > bare new console as last fallback. Returns (success, terminal_name).
+    Prefers attaching as a new tab in an existing wezterm / Windows Terminal
+    so parallel codex spawns share one window instead of scattering across
+    several. If no existing terminal exists, a new one is started.
+
+    Order of preference: wezterm > Windows Terminal (wt) > xterm-family on
+    Unix > bare new console as last fallback. Returns (success, terminal).
     """
     if IS_WINDOWS:
         CREATE_NEW_CONSOLE = 0x00000010
 
         wezterm = shutil.which("wezterm") or shutil.which("wezterm.exe")
         if wezterm:
+            # Try attaching to an existing wezterm via the IPC CLI first; this
+            # gives us a tab in the user's active window. If no wezterm GUI is
+            # running yet, `wezterm cli spawn` errors out and we fall through
+            # to `wezterm start` which boots a fresh GUI.
+            try:
+                r = subprocess.run(
+                    [wezterm, "cli", "spawn", "--cwd", cwd, "--", *codex_argv],
+                    env=env, capture_output=True, timeout=4,
+                )
+                if r.returncode == 0:
+                    return True, "wezterm-tab"
+            except Exception:
+                pass
             try:
                 subprocess.Popen(
-                    [wezterm, "start", "--always-new-process", "--cwd", cwd, "--", *codex_argv],
+                    [wezterm, "start", "--new-tab", "--cwd", cwd, "--", *codex_argv],
                     env=env,
                 )
                 return True, "wezterm"
@@ -141,9 +158,12 @@ def _spawn_codex_in_new_terminal(
 
         wt = shutil.which("wt") or shutil.which("wt.exe")
         if wt:
+            # `wt new-tab` joins the most recently used Windows Terminal
+            # window when one exists, otherwise creates a new window.
             try:
                 subprocess.Popen(
-                    [wt, "new-tab", "--title", "codex", "--startingDirectory", cwd, *codex_argv],
+                    [wt, "new-tab", "--title", "codex",
+                     "--startingDirectory", cwd, *codex_argv],
                     env=env,
                 )
                 return True, "wt"
@@ -168,10 +188,20 @@ def _spawn_codex_in_new_terminal(
             continue
         try:
             if term == "gnome-terminal":
-                subprocess.Popen([path, "--working-directory", cwd, "--", *codex_argv], env=env)
+                subprocess.Popen([path, "--working-directory", cwd, "--tab",
+                                  "--", *codex_argv], env=env)
             elif term == "wezterm":
-                subprocess.Popen([path, "start", "--always-new-process",
-                                  "--cwd", cwd, "--", *codex_argv], env=env)
+                try:
+                    r = subprocess.run(
+                        [path, "cli", "spawn", "--cwd", cwd, "--", *codex_argv],
+                        env=env, capture_output=True, timeout=4,
+                    )
+                    if r.returncode == 0:
+                        return True, "wezterm-tab"
+                except Exception:
+                    pass
+                subprocess.Popen([path, "start", "--new-tab", "--cwd", cwd,
+                                  "--", *codex_argv], env=env)
             else:
                 subprocess.Popen([path, "-e", *codex_argv], cwd=cwd, env=env)
             return True, term
