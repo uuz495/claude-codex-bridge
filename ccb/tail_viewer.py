@@ -1,7 +1,9 @@
 """Standalone tail viewer for codex --json event streams.
 
 Renders JSONL events from `~/.ai-bridge/streams/<job_id>.jsonl` to a terminal
-with ANSI colors + ASCII box-drawing (no Unicode dependency).
+with ANSI colors. Aims to match the detail level of codex's native exec output:
+shell command stdout is rendered inline, file edits show a `+N -M` git stat,
+todo lists re-render on updates.
 
 Usage:
     python tail_viewer.py <stream.jsonl>
@@ -13,8 +15,170 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 import time
+from pathlib import Path
+
+
+_GIT_ROOT_CACHE: dict[str, str | None] = {}
+
+
+def _git_root_for(path: str) -> str | None:
+    """Resolve repo root containing `path`. Cached by parent dir."""
+    try:
+        parent = str(Path(path).resolve().parent)
+    except Exception:
+        return None
+    if parent in _GIT_ROOT_CACHE:
+        return _GIT_ROOT_CACHE[parent]
+    try:
+        r = subprocess.run(
+            ["git", "-C", parent, "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=2, errors="replace",
+        )
+        root = r.stdout.strip() if r.returncode == 0 else None
+    except Exception:
+        root = None
+    _GIT_ROOT_CACHE[parent] = root
+    return root
+
+
+def _file_diff_stat(path: str, kind: str) -> str:
+    """Return '+N -M' / '+N (new)' / '' for a changed file.
+
+    Sources of truth (in order):
+      1. `git diff --numstat HEAD -- path` for tracked files with unstaged edits
+      2. `git status --porcelain -- path` to detect untracked (codex-created) files
+      3. Empty string if file is tracked but clean (edit was already committed)
+    """
+    try:
+        p = Path(path)
+        if not p.exists() and kind not in ("delete", "remove"):
+            return ""
+        root = _git_root_for(path)
+        if not root:
+            if kind in ("add", "create") and p.exists():
+                try:
+                    n = len(p.read_text(encoding="utf-8", errors="replace").splitlines())
+                    return f"+{n} (new)"
+                except Exception:
+                    pass
+            return ""
+        try:
+            rel = str(p.resolve().relative_to(Path(root).resolve())).replace("\\", "/")
+        except Exception:
+            rel = path
+
+        r = subprocess.run(
+            ["git", "-C", root, "diff", "--numstat", "HEAD", "--", rel],
+            capture_output=True, text=True, timeout=2, errors="replace",
+        )
+        line = r.stdout.strip().splitlines()[0] if r.stdout.strip() else ""
+        if line:
+            parts = line.split("\t")
+            if len(parts) >= 2:
+                added, removed = parts[0], parts[1]
+                if added == "-" or removed == "-":
+                    return "(binary)"
+                return f"+{added} -{removed}"
+
+        r2 = subprocess.run(
+            ["git", "-C", root, "status", "--porcelain", "--", rel],
+            capture_output=True, text=True, timeout=2, errors="replace",
+        )
+        status = r2.stdout.strip()
+        if status.startswith("??") and p.exists():
+            try:
+                n = len(p.read_text(encoding="utf-8", errors="replace").splitlines())
+                return f"+{n} (new)"
+            except Exception:
+                return "(new)"
+        return ""
+    except Exception:
+        return ""
+
+
+_PWSH_PATTERN = re.compile(
+    r"^[\"']?[A-Za-z]:\\\\?(?:Program Files\\\\?|Windows\\\\?).*?(?:pwsh|powershell)(?:\.exe)?[\"']?\s+",
+    re.IGNORECASE,
+)
+
+
+def _shorten_command(cmd: str) -> tuple[str, str]:
+    """Return (shell_tag, displayed_command).
+
+    Strips pwsh.exe / powershell.exe / cmd.exe wrappers, keeping only the inner
+    command for display. Returns the shell tag ('pwsh', 'cmd', or '') separately
+    so the viewer can show it as a small prefix.
+    """
+    if not cmd:
+        return "", ""
+    s = cmd.strip()
+    # pwsh.exe / powershell.exe -Command "..."
+    m = re.match(
+        r"^[\"']?[A-Za-z]:\\\\?[^\"']*?(pwsh|powershell)(?:\.exe)?[\"']?\s+(?:-(?:NoProfile|NoLogo|NonInteractive)\s+)*-Command\s+(.*)$",
+        s, re.IGNORECASE | re.DOTALL,
+    )
+    if m:
+        inner = m.group(2).strip()
+        # Strip leading/trailing quote if it wraps the whole inner
+        if len(inner) >= 2 and inner[0] in ("'", '"') and inner[-1] == inner[0]:
+            inner = inner[1:-1]
+        return "pwsh", inner
+    # cmd.exe /c "..."
+    m = re.match(r"^[\"']?[A-Za-z]:\\\\?[^\"']*?cmd(?:\.exe)?[\"']?\s+/[cC]\s+(.*)$", s, re.DOTALL)
+    if m:
+        inner = m.group(1).strip()
+        if len(inner) >= 2 and inner[0] in ("'", '"') and inner[-1] == inner[0]:
+            inner = inner[1:-1]
+        return "cmd", inner
+    # bash -c "..."
+    m = re.match(r"^(?:bash|sh)\s+-c\s+(.*)$", s, re.DOTALL)
+    if m:
+        inner = m.group(1).strip()
+        if len(inner) >= 2 and inner[0] in ("'", '"') and inner[-1] == inner[0]:
+            inner = inner[1:-1]
+        return "sh", inner
+    return "", s
+
+
+def _format_output_block(
+    text: str,
+    indent: str,
+    max_head: int = 8,
+    max_tail: int = 20,
+    *,
+    GRY: str = "",
+    DIM: str = "",
+    R: str = "",
+) -> list[str]:
+    """Render captured stdout/stderr with a vertical bar + head/tail truncation."""
+    if not text:
+        return []
+    # Codex sometimes prefixes with shell prologue noise; just keep as-is
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    # Drop trailing empty lines
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if not lines:
+        return []
+    n = len(lines)
+    bar = GRY + indent + "│ " + R
+    out: list[str] = []
+    if n <= max_head + max_tail + 1:
+        for ln in lines:
+            out.append(bar + ln)
+    else:
+        for ln in lines[:max_head]:
+            out.append(bar + ln)
+        skipped = n - max_head - max_tail
+        out.append(
+            GRY + indent + "│ " + DIM + "··· (" + str(skipped) + " lines elided) ···" + R
+        )
+        for ln in lines[-max_tail:]:
+            out.append(bar + ln)
+    return out
 
 
 def main() -> int:
@@ -60,7 +224,7 @@ def main() -> int:
     try:
         WIDTH = max(40, os.get_terminal_size().columns)
     except Exception:
-        WIDTH = 80
+        WIDTH = 100
 
     SPINNER = "|/-\\"
     spin_state = {"i": 0}
@@ -70,15 +234,15 @@ def main() -> int:
         spin_state["i"] += 1
         return c
 
-    def hr(ch: str = "=", color: str = GRY) -> str:
+    def hr(ch: str = "─", color: str = GRY) -> str:
         return color + (ch * WIDTH) + R
 
     def banner(title: str = "") -> str:
         if not title:
             return hr()
-        left = GRY + "== " + R + B + title + R + " "
+        left = GRY + "── " + R + B + title + R + " "
         visible = 4 + len(title)
-        return left + GRY + ("=" * max(0, WIDTH - visible)) + R
+        return left + GRY + ("─" * max(0, WIDTH - visible)) + R
 
     def render_md(text: str) -> list[str]:
         out: list[str] = []
@@ -90,15 +254,15 @@ def main() -> int:
                     in_code = True
                     lang = m.group(1) or ""
                     out.append(
-                        "  " + GRY + "+-- " + R + CYA + (lang or "code") + R + " "
-                        + GRY + ("-" * max(0, WIDTH - 11 - len(lang))) + R
+                        "  " + GRY + "┌── " + R + CYA + (lang or "code") + R + " "
+                        + GRY + ("─" * max(0, WIDTH - 11 - len(lang))) + R
                     )
                 else:
-                    out.append("  " + GRY + "+" + ("-" * max(0, WIDTH - 3)) + R)
+                    out.append("  " + GRY + "└" + ("─" * max(0, WIDTH - 3)) + R)
                     in_code = False
                 continue
             if in_code:
-                out.append("  " + GRY + "| " + R + line)
+                out.append("  " + GRY + "│ " + R + line)
                 continue
             line = re.sub(r"`([^`]+)`", lambda mm: CYA + mm.group(1) + R, line)
             line = re.sub(r"\*\*([^*]+)\*\*", lambda mm: B + mm.group(1) + R, line)
@@ -110,7 +274,7 @@ def main() -> int:
             print(DIM + "  (empty assistant message)" + R, flush=True)
             return
         print(flush=True)
-        print(banner("assistant"), flush=True)
+        print(banner("codex"), flush=True)
         for ln in render_md(text):
             print(ln, flush=True)
         print(hr(), flush=True)
@@ -120,63 +284,96 @@ def main() -> int:
         if not (text and text.strip()):
             return
         print(flush=True)
+        print(GRY + "── reasoning " + ("─" * max(0, WIDTH - 13)) + R, flush=True)
         for ln in text.splitlines():
-            print(GRY + "  | " + ITAL + ln + R, flush=True)
+            print(GRY + "  " + ITAL + ln + R, flush=True)
 
     def emit_tool_start(item: dict) -> None:
         it = item.get("type", "")
-        name = item.get("name") or item.get("tool") or it
         cmd = item.get("command") or item.get("arguments") or item.get("args") or ""
         if isinstance(cmd, list):
             cmd = " ".join(str(x) for x in cmd)
         cmd = str(cmd)
-        disp = cmd if len(cmd) <= 600 else cmd[:600] + GRY + " ...(truncated)" + R
-        print(BLU + ">" + R + " " + B + name + R + "  " + disp, flush=True)
+        if it == "command_execution":
+            shell, inner = _shorten_command(cmd)
+            tag = (GRY + "[" + shell + "]" + R + " ") if shell else ""
+            disp = inner if inner else cmd
+            disp = disp if len(disp) <= 600 else disp[:600] + DIM + " …(truncated)" + R
+            print(CYA + "· " + R + B + "Ran " + R + tag + disp, flush=True)
+        else:
+            name = item.get("name") or item.get("tool") or it
+            disp = cmd if len(cmd) <= 600 else cmd[:600] + DIM + " …(truncated)" + R
+            print(BLU + "· " + R + B + name + R + "  " + disp, flush=True)
 
     def emit_tool_done(item: dict) -> None:
         rc = item.get("exit_code")
         dur_ms = item.get("duration_ms")
         dur_s = item.get("duration_sec")
+        output = item.get("aggregated_output") or item.get("output") or ""
+        if isinstance(output, dict):
+            # Some tool calls return structured output
+            output = json.dumps(output, ensure_ascii=False)
+        output = str(output)
+
+        # Render output block first (if any), then a footer line with rc + duration
+        if output and output.strip():
+            for ln in _format_output_block(output, "  ", GRY=GRY, DIM=DIM, R=R):
+                print(ln, flush=True)
+
         parts: list[str] = []
         if rc is not None:
-            sym = (GRN + "[OK]" + R) if rc == 0 else (RED + "[X]" + R)
+            sym = (GRN + "✓" + R) if rc == 0 else (RED + "✗" + R)
             parts.append(sym + " exit=" + str(rc))
         if dur_ms is not None:
-            parts.append(GRY + str(int(dur_ms)) + "ms" + R)
+            parts.append(DIM + str(int(dur_ms)) + "ms" + R)
         elif dur_s is not None:
-            parts.append(GRY + str(dur_s) + "s" + R)
+            parts.append(DIM + str(dur_s) + "s" + R)
         if parts:
-            print("  " + "  ".join(parts), flush=True)
+            print("  " + DIM + "└─ " + R + "  ".join(parts), flush=True)
 
     def emit_file_change(item: dict) -> None:
-        # Codex JSONL schema: item.changes = [{path, kind}, ...]
+        # Codex JSONL: item.changes = [{path, kind}, ...]
         changes = item.get("changes") or []
-        if not changes:
-            path = item.get("path") or item.get("file") or "?"
-            kind = item.get("kind") or item.get("action") or ""
-            label = (kind + " ") if kind else ""
-            print(MAG + "*" + R + " " + label + B + path + R, flush=True)
-            return
+        if not changes and (item.get("path") or item.get("file")):
+            changes = [{"path": item.get("path") or item.get("file"),
+                        "kind": item.get("kind") or item.get("action") or "update"}]
         for ch in changes:
             path = ch.get("path") or ch.get("file") or "?"
-            kind = ch.get("kind") or ch.get("action") or ""
-            label = (kind + " ") if kind else ""
-            print(MAG + "*" + R + " " + label + B + path + R, flush=True)
+            kind = (ch.get("kind") or ch.get("action") or "update").lower()
+            verb = {
+                "add": "Added", "create": "Added",
+                "delete": "Deleted", "remove": "Deleted",
+                "update": "Edited", "modify": "Edited",
+                "rename": "Renamed",
+            }.get(kind, "Edited")
+            stat = _file_diff_stat(path, kind) if kind not in ("delete", "remove") else ""
+            stat_suffix = (" " + DIM + stat + R) if stat else ""
+            # Compress to repo-relative path when possible
+            display_path = path
+            root = _git_root_for(path)
+            if root:
+                try:
+                    display_path = str(Path(path).resolve().relative_to(Path(root).resolve())).replace("\\", "/")
+                except Exception:
+                    pass
+            print(MAG + "· " + R + B + verb + R + " " + display_path + stat_suffix, flush=True)
 
-    def emit_todo(item: dict) -> None:
+    def emit_todo(item: dict, *, updated: bool = False) -> None:
         items = item.get("items") or []
         if not items:
             return
         print(flush=True)
-        print(GRY + "  todo:" + R, flush=True)
+        label = "updated todo" if updated else "todo"
+        print(GRY + "── " + label + " " + ("─" * max(0, WIDTH - 5 - len(label))) + R, flush=True)
         for t in items:
             text = t.get("text", "")
             done = t.get("completed", False)
-            mark = (GRN + "[x]" + R) if done else (GRY + "[ ]" + R)
-            color = GRY if done else R
-            print("    " + mark + " " + color + text + R, flush=True)
+            mark = (GRN + "[x]" + R) if done else (DIM + "[ ]" + R)
+            color = DIM if done else R
+            print("  " + mark + " " + color + text + R, flush=True)
 
-    state = {"retry_count": 0, "last_retry_print": 0.0}
+    state = {"retry_count": 0, "last_retry_print": 0.0,
+             "tokens_in_total": 0, "tokens_out_total": 0}
 
     def handle_event(e: dict) -> None:
         t = e.get("type", "")
@@ -215,14 +412,23 @@ def main() -> int:
             return
 
         if t == "turn.started":
-            print(GRY + "-- turn start --" + R, flush=True)
+            print(GRY + "── turn start " + ("─" * max(0, WIDTH - 15)) + R, flush=True)
             return
 
         if t == "turn.completed":
             u = e.get("usage", {}) or {}
+            tin = int(u.get("input_tokens", 0) or 0)
+            tout = int(u.get("output_tokens", 0) or 0)
+            state["tokens_in_total"] += tin
+            state["tokens_out_total"] += tout
             print(
-                GRY + "-- turn done  in=" + str(u.get("input_tokens", 0))
-                + " out=" + str(u.get("output_tokens", 0)) + " --" + R,
+                GRY + "── turn done  in=" + str(tin)
+                + " out=" + str(tout)
+                + DIM + "  (cum in=" + str(state["tokens_in_total"])
+                + " out=" + str(state["tokens_out_total"]) + ")" + R
+                + " " + GRY + ("─" * max(0, WIDTH - 30 - len(str(tin)) - len(str(tout))
+                                         - len(str(state["tokens_in_total"]))
+                                         - len(str(state["tokens_out_total"])))) + R,
                 flush=True,
             )
             return
@@ -239,6 +445,12 @@ def main() -> int:
                     emit_tool_start(item)
                 elif it == "todo_list":
                     emit_todo(item)
+                elif it == "file_change":
+                    # file_change item.started has no diff info yet; render on completed
+                    pass
+            elif t == "item.updated":
+                if it == "todo_list":
+                    emit_todo(item, updated=True)
             elif t == "item.completed":
                 if it == "agent_message":
                     emit_agent_message(item.get("text") or item.get("message") or "")
@@ -277,7 +489,7 @@ def main() -> int:
             while True:
                 line = f.readline()
                 if not line:
-                    time.sleep(0.15)
+                    time.sleep(0.05)
                     continue
                 stripped = line.rstrip()
                 try:
