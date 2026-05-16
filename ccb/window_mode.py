@@ -48,7 +48,7 @@ from .activity import (
     parse_rollout_activity,
     peek_last_jsonl_event,
 )
-from .cli import codex_safe_cwd, resolve_cli
+from .cli import codex_safe_cwd, resolve_cli, resolve_node_cli
 from .jobs import load_job, now_iso, write_job
 from .paths import IS_WINDOWS, JOBS_DIR
 from .spawn import with_summary_tail
@@ -100,12 +100,12 @@ def _codex_tui_flags() -> list[str]:
     """Flags for `codex` (TUI mode, not `exec`).
 
     --yolo is the short form of --dangerously-bypass-approvals-and-sandbox.
-    Reasoning + summary + fast-mode + skip-git-repo-check are all -c overrides
-    so they apply to TUI as well.
+    `--skip-git-repo-check` is `codex exec`-only and rejected by the TUI
+    entry point with "unexpected argument" → exit 2 → wezterm window flashes
+    and closes; do NOT add it here.
     """
     flags = [
         "--yolo",
-        "--skip-git-repo-check",
         "-m", str(config.get("codex_model")),
         "-c", "model_reasoning_effort=" + str(config.get("codex_reasoning_effort")),
         "-c", "model_reasoning_summary=" + str(config.get("codex_reasoning_summary")),
@@ -214,8 +214,16 @@ def register(mcp) -> None:
             return {"error": "[FAIL] empty prompt"}
         prompt = with_summary_tail(prompt)
 
-        codex_bin = resolve_cli("codex")
-        if not codex_bin:
+        # Prefer node + entry.js/.mjs over the .cmd shim — wezterm-as-launcher
+        # cannot execute a .cmd file directly on Windows (it needs cmd.exe in
+        # the chain). resolve_node_cli returns [node.exe, entry] for that path;
+        # falling back to resolve_cli is OK on Unix where the binary is a real
+        # executable.
+        codex_prefix = resolve_node_cli("codex")
+        if not codex_prefix:
+            bin_path = resolve_cli("codex")
+            codex_prefix = [bin_path] if bin_path else None
+        if not codex_prefix:
             return {"error": "[FAIL] codex not in PATH. `npm i -g @openai/codex` first."}
 
         chosen: str | None = None
@@ -231,9 +239,9 @@ def register(mcp) -> None:
         cwd = codex_safe_cwd()
         flags = _codex_tui_flags()
         if session_id:
-            codex_argv = [codex_bin, "resume", session_id, *flags, prompt]
+            codex_argv = [*codex_prefix, "resume", session_id, *flags, prompt]
         else:
-            codex_argv = [codex_bin, *flags, "--cd", cwd, prompt]
+            codex_argv = [*codex_prefix, *flags, "--cd", cwd, prompt]
 
         pre_snapshot = _snapshot_rollouts()
 
