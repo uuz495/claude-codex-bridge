@@ -12,6 +12,7 @@ Set env CCB_SHOW_TRACE=1 to surface codex's internal tracing log noise.
 """
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import re
@@ -22,6 +23,7 @@ from pathlib import Path
 
 
 _GIT_ROOT_CACHE: dict[str, str | None] = {}
+_PREV_FILE_CONTENT: dict[str, str] = {}
 
 
 def _git_root_for(path: str) -> str | None:
@@ -97,6 +99,48 @@ def _file_diff_stat(path: str, kind: str) -> str:
         return ""
     except Exception:
         return ""
+
+
+def _read_file_safe(path: str) -> str:
+    """Read file content, return '' on any failure (missing / binary / locked)."""
+    try:
+        p = Path(path)
+        if not p.exists():
+            return ""
+        # Skip large files to avoid blowing up memory / wedging the viewer
+        if p.stat().st_size > 2 * 1024 * 1024:
+            return ""
+        return p.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def _git_head_content(path: str) -> str:
+    """Return file content at HEAD via `git show`, '' if not tracked."""
+    try:
+        root = _git_root_for(path)
+        if not root:
+            return ""
+        try:
+            rel = str(Path(path).resolve().relative_to(Path(root).resolve())).replace("\\", "/")
+        except Exception:
+            return ""
+        r = subprocess.run(
+            ["git", "-C", root, "show", f"HEAD:{rel}"],
+            capture_output=True, text=True, timeout=3, errors="replace",
+        )
+        return r.stdout if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def _compute_unified_diff(prev: str, curr: str, path: str) -> list[str]:
+    """Return raw unified-diff lines (no ANSI). Empty list if identical."""
+    if prev == curr:
+        return []
+    prev_lines = prev.splitlines(keepends=False)
+    curr_lines = curr.splitlines(keepends=False)
+    return list(difflib.unified_diff(prev_lines, curr_lines, fromfile=path, tofile=path, n=3, lineterm=""))
 
 
 _PWSH_PATTERN = re.compile(
@@ -331,6 +375,44 @@ def main() -> int:
         if parts:
             print("  " + DIM + "└─ " + R + "  ".join(parts), flush=True)
 
+    show_diff = os.environ.get("CCB_SHOW_DIFF", "1") != "0"
+    diff_max_head = int(os.environ.get("CCB_DIFF_HEAD", "12"))
+    diff_max_tail = int(os.environ.get("CCB_DIFF_TAIL", "40"))
+
+    def _render_diff_lines(diff_lines: list[str]) -> None:
+        """Print unified diff with +/- coloring, hunks in cyan, headers dim."""
+        if not diff_lines:
+            return
+        # Drop the file header lines (---/+++) since we already showed the path
+        body: list[str] = []
+        for ln in diff_lines:
+            if ln.startswith("---") or ln.startswith("+++"):
+                continue
+            body.append(ln)
+        if not body:
+            return
+        n = len(body)
+        total_cap = diff_max_head + diff_max_tail
+        if n <= total_cap + 1:
+            view = body
+            elided = 0
+        else:
+            view = body[:diff_max_head] + ["__ELIDED__"] + body[-diff_max_tail:]
+            elided = n - diff_max_head - diff_max_tail
+
+        for ln in view:
+            if ln == "__ELIDED__":
+                print("  " + DIM + "  ··· (" + str(elided) + " diff lines elided) ···" + R, flush=True)
+                continue
+            if ln.startswith("@@"):
+                print("  " + CYA + ln + R, flush=True)
+            elif ln.startswith("+"):
+                print("  " + GRN + ln + R, flush=True)
+            elif ln.startswith("-"):
+                print("  " + RED + ln + R, flush=True)
+            else:
+                print("  " + DIM + ln + R, flush=True)
+
     def emit_file_change(item: dict) -> None:
         # Codex JSONL: item.changes = [{path, kind}, ...]
         changes = item.get("changes") or []
@@ -348,7 +430,6 @@ def main() -> int:
             }.get(kind, "Edited")
             stat = _file_diff_stat(path, kind) if kind not in ("delete", "remove") else ""
             stat_suffix = (" " + DIM + stat + R) if stat else ""
-            # Compress to repo-relative path when possible
             display_path = path
             root = _git_root_for(path)
             if root:
@@ -357,6 +438,28 @@ def main() -> int:
                 except Exception:
                     pass
             print(MAG + "· " + R + B + verb + R + " " + display_path + stat_suffix, flush=True)
+
+            if not show_diff:
+                continue
+            if kind in ("delete", "remove"):
+                # Deleted: prev was last cached or HEAD; show as all minus
+                prev = _PREV_FILE_CONTENT.pop(path, None)
+                if prev is None:
+                    prev = _git_head_content(path)
+                diff = _compute_unified_diff(prev, "", display_path)
+                _render_diff_lines(diff)
+                continue
+            # Add / update path: read current; baseline = last cached, else HEAD
+            curr = _read_file_safe(path)
+            if path in _PREV_FILE_CONTENT:
+                prev = _PREV_FILE_CONTENT[path]
+            elif kind in ("add", "create"):
+                prev = ""
+            else:
+                prev = _git_head_content(path)
+            diff = _compute_unified_diff(prev, curr, display_path)
+            _render_diff_lines(diff)
+            _PREV_FILE_CONTENT[path] = curr
 
     def emit_todo(item: dict, *, updated: bool = False) -> None:
         items = item.get("items") or []
