@@ -5,8 +5,12 @@ Usage:
 or via the installed entry point:
     claude-codex-bridge
 
-Tools are registered conditionally based on config (e.g. multi-account
-management only appears if CCB_ENABLE_ROTATION=1).
+Public tool surface (9 tools, 10 with multi-account rotation):
+    spawn_codex / peek_codex / wait_for_codex     ← codex spawn + tracking
+    cancel_codex_job / list_codex_jobs            ← job management
+    spawn_gemini / spawn_parallel                 ← gemini + cross-provider
+    list_logs                                     ← utility
+    manage_codex_accounts                         ← multi-account (gated)
 """
 from __future__ import annotations
 
@@ -17,9 +21,8 @@ from mcp.server.fastmcp import FastMCP
 from . import (
     account_tools,
     accounts,
-    background_mode,
     gemini,
-    sync_mode,
+    jobs_tools,
     util_tools,
     window_mode,
 )
@@ -30,8 +33,7 @@ def build_server() -> FastMCP:
 
     # Always-on tools
     window_mode.register(mcp)
-    sync_mode.register(mcp)
-    background_mode.register(mcp)
+    jobs_tools.register(mcp)
     gemini.register(mcp)
     util_tools.register(mcp)
 

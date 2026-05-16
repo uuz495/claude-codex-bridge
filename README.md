@@ -4,9 +4,10 @@
 
 <sub>[简体中文](README.zh-CN.md)</sub>
 
-- **Sync wrappers** block the MCP call until codex finishes — Claude can't do anything else for minutes to hours.
-- **Background + pid-polling wrappers** check codex's recorded pid. On Windows that pid is usually a wrapper process (`wt.exe` → `cmd.exe` → `node.exe` → codex.js) that exits early — so status tools report "codex died" while codex is still working.
-- **Window mode** (recommended) opens a new terminal window (wezterm / Windows Terminal / bare console / Unix x-terminal-emulator) and runs `codex --yolo "<prompt>"` directly with a real TTY. What you see IS codex's native TUI — `apply_patch` blocks, inline diffs, command output, reasoning summaries — all rendered by codex itself, not by a re-rendering layer. The bridge tracks completion via codex's own session rollout file at `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<sid>.jsonl`. Never queries process pid.
+- One tool to spawn (`spawn_codex`), with two flags (`wait` / `with_window`) for mode selection — no juggling four near-identical entry points.
+- Default mode opens a new terminal tab (wezterm / Windows Terminal / Unix x-terminal-emulator) and runs `codex --yolo "<prompt>"` directly with a real TTY. What you see IS codex's native TUI — `apply_patch` blocks, inline diffs, command output, reasoning summaries — all rendered by codex itself, not by a re-rendering layer.
+- Parallel spawns share one terminal window via tabs (wezterm CLI / `wt new-tab`) instead of scattering across many windows.
+- The bridge tracks completion via codex's own session rollout file at `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<sid>.jsonl`. Never queries process pid; codex outlives the MCP server.
 
 ## Quick start
 
@@ -28,85 +29,48 @@ Register with Claude Code — add to `~/.claude.json` under `mcpServers`:
 }
 ```
 
-Restart Claude Code. 14 tools appear under the `mcp__claude-codex-bridge__` prefix.
+Restart Claude Code. 8 tools appear under the `mcp__claude-codex-bridge__` prefix (9 with multi-account rotation enabled).
 
 ## Example
 
 Ask Claude:
 
-> Use `spawn_codex_window` to have Codex write a binary-search Fibonacci to `fib.py` and run 10 tests.
+> Use `spawn_codex` to have Codex write a binary-search Fibonacci to `fib.py` and run 10 tests.
 
-Claude gets a `job_id` back immediately. A new terminal window opens running codex's native TUI — you see codex's reasoning, tool calls, file diffs, and command output rendered by codex itself. `peek_codex(job_id)` reports activity parsed from codex's session rollout file; `wait_for_codex(job_id)` blocks until codex writes a `task_complete` event. Neither talks to the codex process.
+Claude gets a `job_id` back immediately. A new terminal tab opens running codex's native TUI — you see codex's reasoning, tool calls, file diffs, and command output rendered by codex itself. `peek_codex(job_id)` reports activity parsed from the rollout file; `wait_for_codex(job_id)` blocks until codex emits `task_complete`. Neither talks to the codex process.
 
 ## Tools
 
-14 tools (20 with multi-account rotation enabled).
-
-<details>
-<summary><b>Window mode</b> — recommended path, 3 tools</summary>
+8 tools (9 with multi-account rotation). The surface is intentionally small — one spawn entry point with flags, plus thin orthogonal helpers.
 
 | Tool | Purpose |
 |---|---|
-| `spawn_codex_window(prompt, ...)` | Open codex as a native TUI in a new terminal window. Returns `job_id` + `rollout_file` path immediately. |
-| `peek_codex(job_id)` | Snapshot of activity parsed from the rollout file (tool calls / file changes / agent messages / completion). Does not infer process liveness. |
+| `spawn_codex(prompt, wait=False, with_window=True, session_id, account, timeout_sec)` | Run codex with a prompt. **Default** (`wait=False, with_window=True`): native TUI in new terminal tab, returns `job_id` + `rollout_file` immediately. `wait=True, with_window=False`: legacy `codex exec --json` blocking call, returns final message text. `wait=True, with_window=True`: opens window AND blocks until `task_complete`. `wait=False, with_window=False`: rejected. |
+| `peek_codex(job_id)` | Snapshot of activity parsed from the rollout (or legacy --json) file: tool calls / file changes / agent messages / completion + final_message. Does not infer process liveness. |
 | `wait_for_codex(job_id, timeout_sec)` | Block until rollout contains an `event_msg/task_complete` event, or timeout. |
-
-</details>
-
-<details>
-<summary><b>Gemini + parallel</b> — 2 tools</summary>
-
-| Tool | Purpose |
-|---|---|
-| `spawn_gemini(prompt)` | One-shot Gemini CLI call. |
-| `spawn_parallel(tasks)` | Run N codex/gemini tasks concurrently. |
-
-</details>
+| `cancel_codex_job(job_id)` | Best-effort cancel. Native TUI jobs are detached from the bridge — only the on-disk job status is flipped to `cancelled`; close the terminal window to actually stop codex. |
+| `list_codex_jobs(limit=20)` | List recent jobs newest-first. |
+| `spawn_gemini(prompt)` | One-shot Gemini CLI call. Returns stdout. |
+| `spawn_parallel(tasks)` | Fan out N codex/gemini tasks concurrently. Codex tasks default to `wait=True, with_window=False` so the caller gets final messages back without opening N terminal tabs. |
+| `list_logs(n)` | Recent subprocess log paths. |
 
 <details>
-<summary><b>Other modes</b> — sync / background, 8 tools</summary>
+<summary><b>Multi-account rotation</b> — optional, off by default, 1 tool</summary>
 
-These still use `codex exec --json` and run codex inside the MCP server's process. Simpler for short blocking calls but more limited rendering than window mode.
+Set `CCB_ENABLE_ROTATION=1` to expose `manage_codex_accounts(action, ...)` with these actions:
 
-| Tool | Notes |
+| Action | Purpose |
 |---|---|
-| `spawn_codex` | Sync block; returns codex's final output. |
-| `spawn_codex_live` | Sync block, plus a live viewer window that re-renders the `--json` event stream. |
-| `codex_inject(session_id, prompt)` | Kill a running live session and resume it with a new prompt under the same session id. |
-| `list_running_codex` | List live processes the bridge is currently tracking. |
-| `spawn_codex_background` | Background asyncio task; returns a `job_id`. Orphaned on MCP restart. |
-| `poll_codex_job(job_id)` | Poll background job state. |
-| `list_codex_jobs` | List recent jobs (any mode). |
-| `cancel_codex_job` | Cancel a background job. Window-mode jobs are detached from the bridge — close the terminal window instead. |
+| `list` | Return rotation order + per-account state. |
+| `get_login_cmd(name)` | Return the `CODEX_HOME=... codex login` shell commands for `name`. |
+| `add(name, overwrite=False)` | Register `name` after you've pre-logged-in to its `CODEX_HOME`. |
+| `reset(name, status)` | Set `name`'s status (`active` / `quota_exhausted` / `banned` / `auth_invalid` / `dead`). |
+| `probe(timeout_sec=45)` | Run a trivial `codex exec` per account to detect quota / ban / auth state. |
+| `remove(name, delete_files=False)` | Drop `name` from rotation, optionally also wipe `accounts/<name>/`. |
 
-</details>
-
-<details>
-<summary><b>Multi-account rotation</b> — optional, off by default, 6 tools</summary>
-
-Set `CCB_ENABLE_ROTATION=1` to expose these.
-
-| Tool | Purpose |
-|---|---|
-| `save_codex_account(name)` | Register an account from `~/.ai-bridge/accounts/<name>/`. |
-| `list_codex_accounts` | View rotation order + per-account state. |
-| `get_codex_login_cmd(name)` | Get the `CODEX_HOME=... codex login` command for a specific account. |
-| `reset_account_state(name, status)` | Manually flip an account's status. |
-| `probe_all_accounts` | Run a trivial codex call per account to detect quota/ban state. |
-| `remove_codex_account(name)` | Remove from rotation. |
-
-> Window mode auto-rotation is limited: mid-task account swap isn't feasible once a real TUI is attached to the terminal. Pass an explicit `account` if you need a specific one; otherwise the current `CODEX_HOME` (default account) is used. The sync / background modes still rotate fully.
+> Window mode auto-rotation is limited: mid-task account swap isn't feasible once a real TUI is attached to the terminal. Pass an explicit `account` to `spawn_codex` for a specific one; otherwise the current `CODEX_HOME` (default account) is used. Legacy sync mode (`wait=True, with_window=False`) still rotates fully.
 
 > Note: using multiple ChatGPT Plus/Pro accounts to extend rate limits may violate OpenAI's Terms of Service. Read your provider's terms before enabling this.
-
-</details>
-
-<details>
-<summary><b>Utility</b> — 1 tool</summary>
-
-| Tool | Purpose |
-|---|---|
-| `list_logs(n)` | Recent subprocess log paths. |
 
 </details>
 
@@ -138,7 +102,7 @@ Have codex end its final message with a parseable verdict:
 
 ### Chain phases via `session_id`
 
-Pass the previous `session_id` into the next `spawn_codex_window` to inherit reasoning + tool history:
+Pass the previous `session_id` into the next `spawn_codex` to inherit reasoning + tool history:
 
 > Spawn codex with prompt P1. After it returns session_id S, spawn another window with `session_id=S` and prompt P2.
 
@@ -170,10 +134,11 @@ Claude Code  <----+  +-- ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<sid>.jsonl
    |               \      codex's own session log
    | MCP            \     (event_msg/task_complete = completion signal,
    v                       patch_apply_end carries unified_diff,
-spawn_codex_window         response_item/function_call_output carries
-   |                       full captured stdout)
+spawn_codex                response_item/function_call_output carries
+(with_window=True)         full captured stdout)
+   |
    v
-wezterm / wt / new-console:
+wezterm tab / wt new-tab / new-console:
    node <codex>/bin/codex.js --yolo -m gpt-5.5 -c ... "<prompt>"
    (real PTY, codex's native TUI in the foreground)
 ```
@@ -184,10 +149,10 @@ wezterm / wt / new-console:
 
 - **Windows-only at the moment**. Tested only on Windows 11. Linux/macOS code branches exist (`subprocess.Popen` defaults, x-terminal-emulator / gnome-terminal / xterm / alacritty / kitty launching) but have never been exercised end-to-end. Treat Unix support as unverified.
 - **Codex TUI doesn't auto-exit on task complete**. After the task finishes the TUI sits at the next-input prompt waiting for follow-up — `wait_for_codex` returns as soon as `task_complete` appears in the rollout, but the window stays open. Close it manually (Ctrl+C / close window).
-- **`cancel_codex_job` is unreliable for stuck jobs** in the legacy sync/background paths. Window-mode jobs are detached and not cancellable through the bridge at all — close the terminal window or kill the PID externally.
+- **`cancel_codex_job` only flips metadata for window-mode jobs**. The codex process is detached and the bridge has no handle — close the terminal window to actually stop codex.
 - **Non-ASCII cwd**. Codex CLI puts the working directory into HTTP headers; non-ASCII bytes trigger an upstream retry loop. Use `CCB_CWD_REMAPS` to map the path to an ASCII junction (Windows: `mklink /J C:\ascii-alias D:\real-path`).
-- **Window mode needs a terminal emulator on PATH**. Detection order: wezterm > Windows Terminal (`wt`) > bare new console (Windows) / `x-terminal-emulator` / `gnome-terminal` / `xterm` / `alacritty` / `kitty` / `wezterm` (Unix). wezterm is preferred for UTF-8 / ANSI handling.
-- **Sync/background modes still use `codex exec --json`** and inherit its quirks (no inline diffs in the stream, a real codex 0.130 bug where parallel `command_execution` events can lose their `item.completed` signal). If you hit those issues, switch the workflow to window mode.
+- **Needs a terminal emulator on PATH** (when `with_window=True`). Detection order: wezterm > Windows Terminal (`wt`) > bare new console (Windows) / `x-terminal-emulator` / `gnome-terminal` / `xterm` / `alacritty` / `kitty` / `wezterm` (Unix). wezterm is preferred for UTF-8 / ANSI handling.
+- **Legacy sync mode (`wait=True, with_window=False`) still uses `codex exec --json`** and inherits its quirks (no inline diffs, a real codex 0.130 bug where parallel `command_execution` events can lose their `item.completed` signal). Prefer the default window mode for non-trivial work.
 
 ## Development
 

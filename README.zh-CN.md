@@ -4,9 +4,10 @@
 
 <sub>[English](README.md)</sub>
 
-- **同步阻塞型 wrapper** 卡住 MCP 调用直到 codex 跑完 —— Claude 在那段时间干不了别的。
-- **后台 + pid 轮询型 wrapper** 用 `pid_exists()` 检查 codex 进程死活。Windows 上记录的 pid 通常是外层包装（`wt.exe` → `cmd.exe` → `node.exe` → codex.js），外层退出时内层 codex 还在干活 —— status 工具就误报 "codex 死了"，但其实没死。
-- **Window 模式**（推荐）开一个新终端窗口（wezterm / Windows Terminal / 裸 console / Unix x-terminal-emulator），在里面直接跑 `codex --yolo "<prompt>"`，TTY 是真的。你看到的就是 codex 自己的 TUI —— `apply_patch` 块、inline diff、命令输出、reasoning summary —— 全部由 codex 本身渲染，不经任何中间层。Bridge 通过 codex 自己的 session rollout 文件 `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<sid>.jsonl` 跟踪完成状态。**不查 codex pid**。
+- 一个 spawn 工具（`spawn_codex`）+ 两个 flag（`wait` / `with_window`）选模式 —— 不用在 4 个长得差不多的工具里挑。
+- 默认模式开一个新终端 tab（wezterm / Windows Terminal / Unix x-terminal-emulator），直接跑 `codex --yolo "<prompt>"`，TTY 是真的。你看到的就是 codex 自己的 TUI —— `apply_patch` 块、inline diff、命令输出、reasoning summary —— 全部 codex 自己渲染，不经任何中间层。
+- 并行 spawn 自动堆 tab 到同一个终端窗口（wezterm CLI / `wt new-tab`），不会到处弹小窗口。
+- Bridge 通过 codex 自己的 session rollout 文件 `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<sid>.jsonl` 跟踪完成状态。**不查 codex pid**，codex 比 MCP server 活得久。
 
 ## 快速开始
 
@@ -28,85 +29,48 @@ git clone https://github.com/uuz495/claude-codex-bridge
 }
 ```
 
-重启 Claude Code。14 个工具以 `mcp__claude-codex-bridge__` 前缀注册进来。
+重启 Claude Code。8 个工具以 `mcp__claude-codex-bridge__` 前缀注册进来（多账号开启后 9 个）。
 
 ## 示例
 
 跟 Claude 说：
 
-> 用 `spawn_codex_window` 让 codex 写一个二分 Fibonacci 到 `fib.py` 然后跑 10 个测试。
+> 用 `spawn_codex` 让 codex 写一个二分 Fibonacci 到 `fib.py` 然后跑 10 个测试。
 
-Claude 瞬间拿到 `job_id`。一个新终端窗口弹出来跑 codex 的原生 TUI —— 你看到的是 codex 自己渲染的推理、tool call、文件 diff、命令输出。`peek_codex(job_id)` 从 rollout 文件解析活动状态，`wait_for_codex(job_id)` 阻塞等 codex 写出 `task_complete` 事件。两者都不跟 codex 进程通讯。
+Claude 瞬间拿到 `job_id`。一个新终端 tab 弹出来跑 codex 的原生 TUI —— 你看到的是 codex 自己渲染的推理、tool call、文件 diff、命令输出。`peek_codex(job_id)` 从 rollout 文件解析活动状态，`wait_for_codex(job_id)` 阻塞等 codex 写出 `task_complete` 事件。两者都不跟 codex 进程通讯。
 
 ## 工具
 
-14 个工具（开启多账号后 20 个）。
-
-<details>
-<summary><b>Window 模式</b> —— 推荐路径，3 个工具</summary>
+8 个工具（多账号开启后 9 个）。接口面刻意做小 —— 一个 spawn 入口 + flag，加上正交的辅助工具。
 
 | 工具 | 用途 |
 |---|---|
-| `spawn_codex_window(prompt, ...)` | 在新终端窗口里把 codex 作为 native TUI 启动，立刻返回 `job_id` + `rollout_file` 路径。 |
-| `peek_codex(job_id)` | 从 rollout 文件解析活动快照（tool call / 文件改动 / agent message / 完成状态）。不推断进程生死。 |
+| `spawn_codex(prompt, wait=False, with_window=True, session_id, account, timeout_sec)` | 跑 codex。**默认**（`wait=False, with_window=True`）：新终端 tab 里 native TUI，立刻返回 `job_id` + `rollout_file`。`wait=True, with_window=False`：走老的 `codex exec --json` 同步阻塞，返回 final message 文本。`wait=True, with_window=True`：开窗口 **同时**阻塞等 `task_complete`。`wait=False, with_window=False`：报错（没法观察也没法返回结果）。 |
+| `peek_codex(job_id)` | 从 rollout（或老 --json）文件解析活动快照：tool call / 文件改动 / agent message / 完成状态 + final_message。不推断进程生死。 |
 | `wait_for_codex(job_id, timeout_sec)` | 阻塞等 rollout 出现 `event_msg/task_complete`，或超时。 |
-
-</details>
-
-<details>
-<summary><b>Gemini + 并行</b> —— 2 个工具</summary>
-
-| 工具 | 用途 |
-|---|---|
-| `spawn_gemini(prompt)` | 一次性 Gemini CLI 调用。 |
-| `spawn_parallel(tasks)` | 并发跑 N 个 codex/gemini 任务。 |
-
-</details>
+| `cancel_codex_job(job_id)` | 尽力取消。Native TUI job 是 detach 的 —— 只能改磁盘 job 状态为 `cancelled`，要真停 codex 必须关终端窗口。 |
+| `list_codex_jobs(limit=20)` | 列最近 jobs，最新在前。 |
+| `spawn_gemini(prompt)` | 一次性 Gemini CLI 调用，返回 stdout。 |
+| `spawn_parallel(tasks)` | 并发跑 N 个 codex/gemini 任务。Codex 任务默认 `wait=True, with_window=False`，调用方拿到 final message 不用开 N 个 tab。 |
+| `list_logs(n)` | 最近 N 条子进程日志路径。 |
 
 <details>
-<summary><b>其他模式</b> —— 同步 / 后台，8 个工具</summary>
+<summary><b>多账号轮换</b> —— 可选，默认关，1 个工具</summary>
 
-这些仍走 `codex exec --json`，codex 在 MCP server 进程里跑。短阻塞调用更简单，但渲染比 window 模式简陋。
+设 `CCB_ENABLE_ROTATION=1` 才暴露 `manage_codex_accounts(action, ...)`：
 
-| 工具 | 备注 |
+| Action | 用途 |
 |---|---|
-| `spawn_codex` | 同步阻塞，返回 codex 最终输出。 |
-| `spawn_codex_live` | 同步阻塞 + live viewer 窗口（自己渲染 `--json` 事件流）。 |
-| `codex_inject(session_id, prompt)` | 干掉正在跑的 live session，用同 session id resume 新 prompt。 |
-| `list_running_codex` | 列当前 bridge 跟踪的 live 进程。 |
-| `spawn_codex_background` | 后台 asyncio task，返回 `job_id`。MCP 重启时会 orphan。 |
-| `poll_codex_job(job_id)` | 查后台 job 状态。 |
-| `list_codex_jobs` | 列最近 jobs（任意模式）。 |
-| `cancel_codex_job` | 取消后台 job。Window 模式 job 是 detach 的 —— 关窗口就行。 |
+| `list` | 返回轮换次序 + 每个账号状态。 |
+| `get_login_cmd(name)` | 返回 `CODEX_HOME=... codex login` 命令串。 |
+| `add(name, overwrite=False)` | 注册 `name`（要求你已经先 pre-login 到它的 `CODEX_HOME`）。 |
+| `reset(name, status)` | 设置 `name` 状态（`active` / `quota_exhausted` / `banned` / `auth_invalid` / `dead`）。 |
+| `probe(timeout_sec=45)` | 每个账号跑一次 trivial `codex exec` 探活。 |
+| `remove(name, delete_files=False)` | 从轮换里删除 `name`，可选同时清 `accounts/<name>/`。 |
 
-</details>
-
-<details>
-<summary><b>多账号轮换</b> —— 可选，默认关，6 个工具</summary>
-
-设 `CCB_ENABLE_ROTATION=1` 才暴露这些工具。
-
-| 工具 | 用途 |
-|---|---|
-| `save_codex_account(name)` | 把 `~/.ai-bridge/accounts/<name>/` 注册成账号。 |
-| `list_codex_accounts` | 看轮换次序 + 每个账号状态。 |
-| `get_codex_login_cmd(name)` | 拿到 `CODEX_HOME=... codex login` 命令串。 |
-| `reset_account_state(name, status)` | 手动改账号状态。 |
-| `probe_all_accounts` | 每个账号跑一次 trivial 调用，识别 quota/ban 状态。 |
-| `remove_codex_account(name)` | 从轮换里删除。 |
-
-> Window 模式的自动轮换有限：TUI 接到终端后，任务中途换账号不现实。需要指定账号就传 `account=...`，否则用当前 `CODEX_HOME`（默认账号）。同步 / 后台模式仍然完整轮换。
+> Window 模式的自动轮换有限：TUI 接到终端后，任务中途换账号不现实。需要指定账号就传 `account=...` 到 `spawn_codex`，否则用当前 `CODEX_HOME`（默认账号）。Legacy 同步模式（`wait=True, with_window=False`）仍然完整轮换。
 
 > 注意：用多个 ChatGPT Plus/Pro 账号绕开速率限制可能违反 OpenAI 服务条款。启用前请阅读你所在服务商的条款。
-
-</details>
-
-<details>
-<summary><b>杂项</b> —— 1 个工具</summary>
-
-| 工具 | 用途 |
-|---|---|
-| `list_logs(n)` | 最近 N 条子进程日志路径。 |
 
 </details>
 
@@ -138,7 +102,7 @@ Claude 阻塞等 rollout 出现 `event_msg/task_complete`，然后接 review 步
 
 ### 通过 `session_id` 串接多步
 
-把上一步的 `session_id` 传给下一个 `spawn_codex_window`，继承之前的推理 + 工具调用历史：
+把上一步的 `session_id` 传给下一个 `spawn_codex`，继承之前的推理 + 工具调用历史：
 
 > 先用 prompt P1 spawn codex。拿到返回的 session_id S 后，用 `session_id=S` + prompt P2 spawn 另一个窗口。
 
@@ -170,10 +134,11 @@ Claude Code  <----+  +-- ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<sid>.jsonl
    |               \      codex 自己的 session 日志
    | MCP            \     (event_msg/task_complete = 完成信号,
    v                       patch_apply_end 带 unified_diff,
-spawn_codex_window         response_item/function_call_output 带完整 stdout)
+spawn_codex                response_item/function_call_output 带完整 stdout)
+(with_window=True)
    |
    v
-wezterm / wt / new-console:
+wezterm tab / wt new-tab / new-console:
    node <codex>/bin/codex.js --yolo -m gpt-5.5 -c ... "<prompt>"
    (真 PTY, codex native TUI 前台运行)
 ```
@@ -184,10 +149,10 @@ wezterm / wt / new-console:
 
 - **目前只在 Windows 上跑过**。只在 Windows 11 测过。源码里有 Linux/macOS 代码分支（`subprocess.Popen` 默认值、x-terminal-emulator / gnome-terminal / xterm / alacritty / kitty 启动），但从未端到端跑过。Unix 支持视为未经验证。
 - **Codex TUI 跑完不会自动退出**。任务完成后 TUI 停在等下一条用户输入的状态 —— `wait_for_codex` 一看到 rollout 里的 `task_complete` 就立刻返回，但窗口还开着。手动关（Ctrl+C / 关窗口）。
-- **`cancel_codex_job` 对卡住的 job 不可靠**（同步/后台模式）。Window 模式 job 是 detach 的，根本不能通过 bridge 取消 —— 关窗口或手动 kill PID。
+- **`cancel_codex_job` 对 window 模式 job 只改 metadata**。codex 进程是 detach 的 bridge 没 handle —— 真要停 codex 就关终端窗口。
 - **非 ASCII cwd**。Codex CLI 把工作目录塞 HTTP header，非 ASCII 字节触发上游 retry 循环。用 `CCB_CWD_REMAPS` 把路径映射到 ASCII junction（Windows：`mklink /J C:\ascii-alias D:\real-path`）。
-- **Window 模式需要终端模拟器在 PATH**。检测顺序：wezterm > Windows Terminal (`wt`) > 裸新 console（Windows）/ `x-terminal-emulator` / `gnome-terminal` / `xterm` / `alacritty` / `kitty` / `wezterm`（Unix）。优先 wezterm，UTF-8 / ANSI 处理更稳。
-- **同步/后台模式仍走 `codex exec --json`**，继承它的局限（事件流没 inline diff，codex 0.130 有真 bug —— 并发 `command_execution` 事件可能丢 `item.completed` 信号）。遇到这些就切 window 模式。
+- **需要终端模拟器在 PATH**（`with_window=True` 时）。检测顺序：wezterm > Windows Terminal (`wt`) > 裸新 console（Windows）/ `x-terminal-emulator` / `gnome-terminal` / `xterm` / `alacritty` / `kitty` / `wezterm`（Unix）。优先 wezterm，UTF-8 / ANSI 处理更稳。
+- **Legacy 同步模式（`wait=True, with_window=False`）仍走 `codex exec --json`**，继承它的局限（没 inline diff，codex 0.130 真 bug —— 并发 `command_execution` 事件可能丢 `item.completed`）。非平凡任务用默认 window 模式。
 
 ## 开发
 

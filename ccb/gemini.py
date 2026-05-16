@@ -35,14 +35,21 @@ def register(mcp) -> None:
         """Fan out N codex/gemini tasks concurrently.
 
         tasks: [{ai: "codex"|"gemini", prompt: "...", session_id?: "...",
-                 account?: "...", timeout_sec?: 1800, auto_rotate?: True}]
+                 account?: "...", wait?: bool, with_window?: bool,
+                 timeout_sec?: 1800}]
+
+        Codex tasks go through the unified spawn_codex dispatch. Defaults:
+        `wait=True, with_window=False` for parallel so the caller gets
+        final messages back without opening N terminal windows.
+        Override with `with_window=True` if you want each parallel codex
+        to also pop a terminal tab.
+
         Returns: [{index, ai, output|error, ...}]
         """
         if not isinstance(tasks, list) or not tasks:
             return [{"index": 0, "error": "[FAIL] tasks must be a non-empty list"}]
 
-        # Late import to avoid circular: spawn_codex is registered on the same mcp.
-        from . import sync_mode  # noqa: F401  — ensure module loaded
+        from .window_mode import spawn_codex_dispatch
 
         async def _run(i: int, task: dict) -> dict:
             ai = task.get("ai", "").lower()
@@ -50,13 +57,16 @@ def register(mcp) -> None:
             timeout_sec = task.get("timeout_sec", DEFAULT_TIMEOUT)
             session_id = task.get("session_id")
             account = task.get("account")
-            auto_rotate = task.get("auto_rotate", True)
+            wait = task.get("wait", True)
+            with_window = task.get("with_window", False)
             if ai == "codex":
-                from .sync_mode import _rotate_and_spawn, _spawn_codex_once
-                from .spawn import with_summary_tail
-                res = await _rotate_and_spawn(
-                    with_summary_tail(prompt), session_id, timeout_sec,
-                    _spawn_codex_once, account, auto_rotate,
+                res = await spawn_codex_dispatch(
+                    prompt,
+                    wait=wait,
+                    with_window=with_window,
+                    session_id=session_id,
+                    account=account,
+                    timeout_sec=timeout_sec,
                 )
                 return {"index": i, "ai": ai, **res}
             elif ai == "gemini":

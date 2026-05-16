@@ -1,17 +1,12 @@
-"""Legacy synchronous + live spawn modes.
+"""Synchronous `codex exec --json` helper.
 
-Window mode (window_mode.py) is recommended for most use cases. These tools are
-retained for advanced workflows:
-  - spawn_codex: short fully-blocking call (Claude waits for the result)
-  - spawn_codex_live: blocking but with a live viewer window + stream events
-  - codex_inject: interrupt an in-flight live session + resume with new prompt
-  - list_running_codex: enumerate live processes the bridge currently knows of
+No MCP tools are registered here — these are pure helpers called by
+window_mode._spawn_sync_impl when the unified spawn_codex is invoked with
+`wait=True, with_window=False`.
 """
 from __future__ import annotations
 
 import asyncio
-import os
-import signal
 import tempfile
 import uuid
 from pathlib import Path
@@ -19,16 +14,11 @@ from pathlib import Path
 from . import accounts, config
 from .classify import classify_codex_result, parse_quota_reset
 from .cli import codex_safe_cwd, resolve_cli, resolve_node_cli
-from .jobs import RUNNING_CODEX_PROCS
-from .paths import LOG_DIR, RUNNING_DIR, STREAM_DIR
 from .spawn import (
     codex_pinned_flags,
     extract_session_id_from_jsonl,
     run_subprocess,
-    wait_pid_exit,
-    with_summary_tail,
 )
-from .viewer import open_tail_window
 
 DEFAULT_TIMEOUT = 30 * 60
 _AUTH_SWAP_LOCK = asyncio.Lock()
@@ -75,118 +65,8 @@ async def _spawn_codex_once(
                     break
         except Exception:
             pass
-        return {"rc": rc, "stdout": stdout, "stderr": stderr, "result": result_text, "session_id": sid}
-
-
-async def _spawn_codex_live_once(
-    prompt: str,
-    session_id: str | None,
-    timeout_sec: int,
-    codex_prefix: list[str],
-    account: str | None = None,
-) -> dict:
-    """Live exec: stream JSONL to STREAM_DIR/<sid>.jsonl, open viewer, await completion."""
-    with tempfile.TemporaryDirectory(prefix="codex_live_out_") as tmp:
-        out_file = Path(tmp) / "last.md"
-        out_file.touch()
-        flags = [
-            *codex_pinned_flags(),
-            "--skip-git-repo-check",
-            "--dangerously-bypass-approvals-and-sandbox",
-            "--json",
-            "--output-last-message", str(out_file),
-        ]
-        if session_id:
-            cmd = [*codex_prefix, "exec", "resume", session_id, *flags, prompt]
-        else:
-            cmd = [*codex_prefix, "exec", "--cd", codex_safe_cwd(), *flags, prompt]
-
-        env = os.environ.copy()
-        if account:
-            env["CODEX_HOME"] = str(accounts.account_home(account))
-
-        tmp_stream = STREAM_DIR / f"live_{uuid.uuid4().hex[:10]}.jsonl"
-        tmp_stream.touch()
-
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
-            )
-        except Exception as e:
-            return {"rc": 127, "stdout": "", "stderr": f"spawn: {e}", "result": "", "session_id": ""}
-
-        opened_viewer = False
-        actual_sid = ""
-
-        async def _drain_stdout():
-            nonlocal opened_viewer, actual_sid
-            assert proc.stdout is not None
-            with tmp_stream.open("ab") as f:
-                while True:
-                    line = await proc.stdout.readline()
-                    if not line:
-                        break
-                    f.write(line)
-                    f.flush()
-                    if not actual_sid:
-                        try:
-                            sid = extract_session_id_from_jsonl(line.decode("utf-8", errors="replace"))
-                            if sid:
-                                actual_sid = sid
-                                RUNNING_CODEX_PROCS[actual_sid] = proc
-                                (RUNNING_DIR / f"{actual_sid}.pid").write_text(str(proc.pid))
-                                opened_viewer, _ = open_tail_window(tmp_stream)
-                        except Exception:
-                            pass
-
-        async def _drain_stderr() -> str:
-            assert proc.stderr is not None
-            chunks: list[bytes] = []
-            while True:
-                line = await proc.stderr.readline()
-                if not line:
-                    break
-                chunks.append(line)
-            return b"".join(chunks).decode("utf-8", errors="replace")
-
-        try:
-            stderr_task = asyncio.create_task(_drain_stderr())
-            stdout_task = asyncio.create_task(_drain_stdout())
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=timeout_sec)
-            except asyncio.TimeoutError:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-                await proc.wait()
-            await stdout_task
-            stderr = await stderr_task
-        finally:
-            if actual_sid:
-                RUNNING_CODEX_PROCS.pop(actual_sid, None)
-                try:
-                    (RUNNING_DIR / f"{actual_sid}.pid").unlink(missing_ok=True)
-                except Exception:
-                    pass
-
-        try:
-            result_text = out_file.read_text(encoding="utf-8", errors="replace").strip()
-        except Exception:
-            result_text = ""
-
-        return {
-            "rc": proc.returncode if proc.returncode is not None else -1,
-            "stdout": "",  # stream goes to file
-            "stderr": stderr,
-            "result": result_text,
-            "session_id": actual_sid,
-            "stream_file": str(tmp_stream),
-        }
+        return {"rc": rc, "stdout": stdout, "stderr": stderr,
+                "result": result_text, "session_id": sid}
 
 
 async def _rotate_and_spawn(
@@ -197,7 +77,7 @@ async def _rotate_and_spawn(
     account: str | None,
     auto_rotate: bool,
 ) -> dict:
-    """Shared rotation loop for spawn_codex / spawn_codex_live."""
+    """Shared rotation loop for sync exec."""
     codex_prefix = resolve_node_cli("codex") or (
         [resolve_cli("codex")] if resolve_cli("codex") else None
     )
@@ -214,7 +94,8 @@ async def _rotate_and_spawn(
         elif rotation_on:
             chosen = accounts.pick_next_eligible_account(tried)
             if not chosen:
-                return {"error": "[FAIL] all accounts exhausted/banned", "tried_accounts": sorted(tried)}
+                return {"error": "[FAIL] all accounts exhausted/banned",
+                        "tried_accounts": sorted(tried)}
 
         async with _AUTH_SWAP_LOCK:
             if chosen:
@@ -222,7 +103,8 @@ async def _rotate_and_spawn(
                 if not ok:
                     tried.add(chosen)
                     if account or not auto_rotate:
-                        return {"error": f"[FAIL] activate {chosen}: {err}", "account_used": chosen}
+                        return {"error": f"[FAIL] activate {chosen}: {err}",
+                                "account_used": chosen}
                     continue
             res = await spawner(prompt, session_id, timeout_sec, codex_prefix, account=chosen)
 
@@ -265,102 +147,6 @@ async def _rotate_and_spawn(
             "session_id": res["session_id"],
             "output": res["result"] or "[WARN] codex exited OK but produced no output",
         }
-        if "stream_file" in res:
-            out["stream_file"] = res["stream_file"]
         if chosen:
             out["account_used"] = chosen
         return out
-
-
-def register(mcp) -> None:
-    @mcp.tool()
-    async def spawn_codex(
-        prompt: str,
-        session_id: str | None = None,
-        timeout_sec: int = DEFAULT_TIMEOUT,
-        account: str | None = None,
-        auto_rotate: bool = True,
-    ) -> dict:
-        """Synchronous Codex spawn (blocks until codex exits)."""
-        if not prompt or not prompt.strip():
-            return {"error": "[FAIL] empty prompt"}
-        return await _rotate_and_spawn(
-            with_summary_tail(prompt), session_id, timeout_sec,
-            _spawn_codex_once, account, auto_rotate,
-        )
-
-    @mcp.tool()
-    async def spawn_codex_live(
-        prompt: str,
-        session_id: str | None = None,
-        timeout_sec: int = DEFAULT_TIMEOUT,
-        account: str | None = None,
-        auto_rotate: bool = True,
-    ) -> dict:
-        """Synchronous Codex spawn with a live viewer window. Caller still blocks."""
-        if not prompt or not prompt.strip():
-            return {"error": "[FAIL] empty prompt"}
-        return await _rotate_and_spawn(
-            with_summary_tail(prompt), session_id, timeout_sec,
-            _spawn_codex_live_once, account, auto_rotate,
-        )
-
-    @mcp.tool()
-    async def codex_inject(session_id: str, prompt: str) -> dict:
-        """Interrupt a running live codex session, then resume with a new prompt."""
-        if not session_id or not session_id.strip():
-            return {"error": "[FAIL] empty session_id"}
-        if not prompt or not prompt.strip():
-            return {"session_id": session_id, "error": "[FAIL] empty prompt"}
-
-        pid_path = RUNNING_DIR / f"{session_id}.pid"
-        if not pid_path.exists():
-            return {"session_id": session_id, "error": f"[FAIL] no running codex for {session_id}"}
-
-        try:
-            pid = int(pid_path.read_text(encoding="utf-8").strip())
-        except Exception as e:
-            pid_path.unlink(missing_ok=True)
-            return {"session_id": session_id, "error": f"[FAIL] invalid pid file: {e}"}
-
-        proc = RUNNING_CODEX_PROCS.get(session_id)
-        try:
-            if proc and proc.returncode is None:
-                proc.terminate()
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=10)
-                except asyncio.TimeoutError:
-                    proc.kill()
-                    await proc.wait()
-            else:
-                os.kill(pid, signal.SIGTERM)
-                exited = await wait_pid_exit(pid, 10)
-                if not exited:
-                    return {"session_id": session_id, "error": f"[FAIL] pid {pid} did not exit within 10s"}
-        except ProcessLookupError:
-            pass
-        finally:
-            pid_path.unlink(missing_ok=True)
-            RUNNING_CODEX_PROCS.pop(session_id, None)
-
-        return await spawn_codex_live(prompt, session_id=session_id)
-
-    @mcp.tool()
-    async def list_running_codex() -> list[dict]:
-        """List currently tracked live codex processes."""
-        rows: list[dict] = []
-        try:
-            for pid_file in sorted(RUNNING_DIR.glob("*.pid"), key=lambda p: p.stat().st_mtime, reverse=True):
-                session_id = pid_file.stem
-                try:
-                    pid = int(pid_file.read_text(encoding="utf-8").strip())
-                except Exception:
-                    continue
-                rows.append({
-                    "session_id": session_id,
-                    "pid": pid,
-                    "stream_file": str(STREAM_DIR / f"{session_id}.jsonl"),
-                })
-        except Exception as e:
-            return [{"error": f"[FAIL] {type(e).__name__}: {e}"}]
-        return rows
