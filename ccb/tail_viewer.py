@@ -332,34 +332,54 @@ def main() -> int:
         for ln in text.splitlines():
             print(GRY + "  " + ITAL + ln + R, flush=True)
 
+    def _render_cmd_header(item: dict) -> None:
+        """Print `· Ran [shell] inner_cmd` line for a command_execution item."""
+        cmd = item.get("command") or ""
+        if isinstance(cmd, list):
+            cmd = " ".join(str(x) for x in cmd)
+        cmd = str(cmd)
+        shell, inner = _shorten_command(cmd)
+        tag = (GRY + "[" + shell + "]" + R + " ") if shell else ""
+        disp = inner if inner else cmd
+        disp = disp if len(disp) <= 600 else disp[:600] + DIM + " …(truncated)" + R
+        print(CYA + "· " + R + B + "Ran " + R + tag + disp, flush=True)
+
     def emit_tool_start(item: dict) -> None:
+        """Emit on item.started for non-command tools only.
+
+        Shell commands are rendered as a single block on item.completed (header
+        + output + footer together) so parallel command_execution events do not
+        interleave: when codex starts cmd1 and cmd2 back-to-back, the JSONL is
+        started1/started2/completed1/completed2 — emitting on started would
+        place cmd1's output under cmd2's header in the linear scrollback.
+        """
         it = item.get("type", "")
+        if it == "command_execution":
+            return
         cmd = item.get("command") or item.get("arguments") or item.get("args") or ""
         if isinstance(cmd, list):
             cmd = " ".join(str(x) for x in cmd)
         cmd = str(cmd)
-        if it == "command_execution":
-            shell, inner = _shorten_command(cmd)
-            tag = (GRY + "[" + shell + "]" + R + " ") if shell else ""
-            disp = inner if inner else cmd
-            disp = disp if len(disp) <= 600 else disp[:600] + DIM + " …(truncated)" + R
-            print(CYA + "· " + R + B + "Ran " + R + tag + disp, flush=True)
-        else:
-            name = item.get("name") or item.get("tool") or it
-            disp = cmd if len(cmd) <= 600 else cmd[:600] + DIM + " …(truncated)" + R
-            print(BLU + "· " + R + B + name + R + "  " + disp, flush=True)
+        name = item.get("name") or item.get("tool") or it
+        disp = cmd if len(cmd) <= 600 else cmd[:600] + DIM + " …(truncated)" + R
+        print(BLU + "· " + R + B + name + R + "  " + disp, flush=True)
 
     def emit_tool_done(item: dict) -> None:
+        it = item.get("type", "")
+        # For command_execution we deferred the header from item.started so
+        # parallel commands don't interleave; print header+output+footer as a
+        # single block now.
+        if it == "command_execution":
+            _render_cmd_header(item)
+
         rc = item.get("exit_code")
         dur_ms = item.get("duration_ms")
         dur_s = item.get("duration_sec")
         output = item.get("aggregated_output") or item.get("output") or ""
         if isinstance(output, dict):
-            # Some tool calls return structured output
             output = json.dumps(output, ensure_ascii=False)
         output = str(output)
 
-        # Render output block first (if any), then a footer line with rc + duration
         if output and output.strip():
             for ln in _format_output_block(output, "  ", GRY=GRY, DIM=DIM, R=R):
                 print(ln, flush=True)
