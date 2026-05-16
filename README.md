@@ -149,7 +149,7 @@ Override defaults via env var or `~/.ai-bridge/config.json`. Env wins over file 
 | Setting | Env var | Default | Purpose |
 |---|---|---|---|
 | Codex model | `CCB_CODEX_MODEL` | `gpt-5.5` | The `-m` flag |
-| Reasoning effort | `CCB_REASONING_EFFORT` | `medium` | `-c model_reasoning_effort=...` |
+| Reasoning effort | `CCB_REASONING_EFFORT` | `high` | `-c model_reasoning_effort=...` |
 | Reasoning summary | `CCB_REASONING_SUMMARY` | `auto` | `-c model_reasoning_summary=...` — `none` / `auto` / `concise` / `detailed`. The default override ensures the rollout has a visible "what I'm about to do" block even if your `~/.codex/config.toml` pins `summary=none`. |
 | Fast mode | `CCB_FAST_MODE` | `1` | `--enable fast_mode` |
 | Default timeout | `CCB_DEFAULT_TIMEOUT` | `1800` | Seconds, applies to sync modes |

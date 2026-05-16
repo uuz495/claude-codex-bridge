@@ -149,7 +149,7 @@ Claude 阻塞等 rollout 出现 `event_msg/task_complete`，然后接 review 步
 | 设置 | 环境变量 | 默认 | 用途 |
 |---|---|---|---|
 | Codex 模型 | `CCB_CODEX_MODEL` | `gpt-5.5` | `-m` flag |
-| 推理强度 | `CCB_REASONING_EFFORT` | `medium` | `-c model_reasoning_effort=...` |
+| 推理强度 | `CCB_REASONING_EFFORT` | `high` | `-c model_reasoning_effort=...` |
 | 推理摘要 | `CCB_REASONING_SUMMARY` | `auto` | `-c model_reasoning_summary=...` —— `none` / `auto` / `concise` / `detailed`。每次 spawn 强制覆盖，确保 rollout 有可见的"我接下来要做什么"块，不被你 `~/.codex/config.toml` 的 `summary=none` 静音。 |
 | Fast mode | `CCB_FAST_MODE` | `1` | `--enable fast_mode` |
 | 默认超时 | `CCB_DEFAULT_TIMEOUT` | `1800` | 秒，仅同步模式生效 |

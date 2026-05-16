@@ -13,7 +13,7 @@ from .paths import CONFIG_FILE
 
 _DEFAULTS: dict[str, Any] = {
     "codex_model": "gpt-5.5",
-    "codex_reasoning_effort": "medium",
+    "codex_reasoning_effort": "high",
     "codex_reasoning_summary": "auto",
     "codex_fast_mode": True,
     "default_timeout_sec": 1800,
